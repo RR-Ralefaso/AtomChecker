@@ -1,41 +1,41 @@
 [package]
-name = "Spellchecker"
+name = "spellchecker"
 version = "0.1.0"
 edition = "2021"
 authors = ["Rothang Ralph Ralefaso <rrralefaso@outlook.com>"]
 description = "An Atom IDE-inspired multilingual spell checker"
-repository = "https://github.com/RR-Ralefaso/Spellchecker"
+repository = "https://github.com/RR-Ralefaso/SpellChecker"
 license = "MIT"
 readme = "README.md"
 
 [features]
 default = ["gui"]
 cli = ["clap", "colored"]
-gui = ["eframe", "egui", "rfd"]
+gui = ["eframe", "egui", "rfd", "egui_extras"]
 
 [[bin]]
-name = "Spellchecker"
+name = "spellchecker"
 path = "src/main.rs"
 
 [[bin]]
-name = "Spellchecker_cli"
+name = "spellchecker_cli"
 path = "src/cli.rs"
 required-features = ["cli"]
 
 [lib]
-name = "Spellchecker"
+name = "spellchecker"
 path = "src/lib.rs"
 
 [dependencies]
 # GUI dependencies
-eframe = { version = "0.26", optional = true }
-egui = { version = "0.26", optional = true }
-rfd = { version = "0.13", optional = true }
-egui_extras = { version = "0.26", optional = true }
+eframe = { version = "0.27", optional = true }
+egui = { version = "0.27", optional = true }
+rfd = { version = "0.14", optional = true }
+egui_extras = { version = "0.27", optional = true }
 
 # Core functionality
 rayon = "1.8.0"
-regex = "1.10.0"
+regex = "1.10.2"
 walkdir = "2.4.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
