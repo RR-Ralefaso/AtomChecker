@@ -1,8 +1,8 @@
+use crate::checker::{DocumentAnalysis, SpellChecker};
 use crate::editor::TextEditor;
+use crate::language::{Language, LanguageManager};
 use crate::sidebar::Sidebar;
 use crate::theme::AtomTheme;
-use crate::checker::SpellChecker;
-use crate::language::{Language, LanguageManager};
 use eframe::egui;
 use rfd::FileDialog;
 use std::path::PathBuf;
@@ -23,6 +23,10 @@ pub struct AppState {
     pub selected_language: Language,
     pub auto_detect_language: bool,
     pub available_languages: Vec<Language>,
+    pub show_dictionary_manager: bool,
+    pub font_size: f32,
+    pub wrap_text: bool,
+    pub show_whitespace: bool,
 }
 
 impl Default for AppState {
@@ -42,6 +46,10 @@ impl Default for AppState {
             selected_language: Language::English,
             auto_detect_language: true,
             available_languages: language_manager.available_languages().to_vec(),
+            show_dictionary_manager: false,
+            font_size: 14.0,
+            wrap_text: true,
+            show_whitespace: false,
         }
     }
 }
@@ -57,6 +65,10 @@ pub struct SpellCheckerApp {
     drop_highlight: bool,
     stats: CheckStats,
     language_manager: LanguageManager,
+    analysis: Option<DocumentAnalysis>,
+    pending_add_word: Option<String>,
+    pending_ignore_word: Option<String>,
+    pending_replace: Option<(String, String)>,
 }
 
 #[derive(Default)]
@@ -68,20 +80,22 @@ struct CheckStats {
 }
 
 impl SpellCheckerApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let state = AppState::default();
         let language_manager = LanguageManager::new();
         
-        // Initialize spell checker with selected language
         let spell_checker = Arc::new(
             SpellChecker::new(state.selected_language)
                 .expect("Failed to create spell checker"),
         );
         
+        let mut text_editor = TextEditor::new();
+        text_editor.set_font_size(state.font_size);
+        
         Self {
             state: state.clone(),
-            text_editor: TextEditor::new(state.clone()),
-            sidebar: Sidebar::new(state.clone(), Arc::clone(&spell_checker)),
+            text_editor,
+            sidebar: Sidebar::new(),
             spell_checker,
             last_check_time: Instant::now(),
             check_interval: std::time::Duration::from_millis(1000),
@@ -89,6 +103,10 @@ impl SpellCheckerApp {
             drop_highlight: false,
             stats: CheckStats::default(),
             language_manager,
+            analysis: None,
+            pending_add_word: None,
+            pending_ignore_word: None,
+            pending_replace: None,
         }
     }
     
@@ -107,17 +125,19 @@ impl SpellCheckerApp {
             
             // Update spell checker language if changed
             if language_to_use != self.spell_checker.current_language() {
-                if let Err(e) = self.spell_checker.set_language(language_to_use) {
+                if let Err(e) = Arc::get_mut(&mut self.spell_checker).unwrap().set_language(language_to_use) {
                     eprintln!("Failed to change language: {}", e);
                 }
             }
             
-            let analysis = self.spell_checker.check_document(&self.state.document_content);
+            self.analysis = Some(self.spell_checker.check_document(&self.state.document_content));
+            let analysis = self.analysis.as_ref().unwrap();
+            
             self.stats.total_words = analysis.total_words;
             self.stats.errors = analysis.misspelled_words;
             self.stats.last_check_duration = start_time.elapsed();
             
-            self.text_editor.set_analysis(analysis);
+            self.text_editor.set_analysis(analysis.clone());
             self.last_check_time = Instant::now();
         }
     }
@@ -140,7 +160,7 @@ impl SpellCheckerApp {
         if self.state.auto_detect_language {
             let detected = self.language_manager.detect_language(&self.state.document_content);
             self.state.selected_language = detected;
-            if let Err(e) = self.spell_checker.set_language(detected) {
+            if let Err(e) = Arc::get_mut(&mut self.spell_checker).unwrap().set_language(detected) {
                 eprintln!("Failed to set language: {}", e);
             }
         }
@@ -151,54 +171,59 @@ impl SpellCheckerApp {
         Ok(())
     }
     
-    // ... rest of the existing methods remain the same ...
+    fn save_file(&mut self) -> anyhow::Result<()> {
+        if let Some(path) = &self.state.current_file {
+            std::fs::write(path, &self.state.document_content)?;
+            self.state.is_document_modified = false;
+        }
+        Ok(())
+    }
     
-    fn show_language_selection(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            // Language selection combo box
-            ui.label("🌍 Language:");
-            
-            egui::ComboBox::from_id_salt("language_combo")
-                .selected_text(format!(
-                    "{} {}",
-                    self.state.selected_language.flag_emoji(),
-                    self.state.selected_language.name()
-                ))
-                .show_ui(ui, |ui| {
-                    for lang in &self.state.available_languages {
-                        ui.selectable_value(
-                            &mut self.state.selected_language,
-                            *lang,
-                            format!("{} {}", lang.flag_emoji(), lang.name()),
-                        );
-                    }
-                });
-            
-            // Auto-detect checkbox
-            ui.checkbox(&mut self.state.auto_detect_language, "Auto-detect");
-            
-            // Show detected language if auto-detect is on
-            if self.state.auto_detect_language {
-                if let Some(detected) = self.stats.detected_language {
-                    ui.colored_label(
-                        egui::Color32::LIGHT_BLUE,
-                        format!("Detected: {}", detected.name()),
-                    );
+    fn save_as(&mut self) -> anyhow::Result<()> {
+        if let Some(path) = FileDialog::new()
+            .add_filter("Text files", &["txt", "md", "rs", "py", "js", "html", "css"])
+            .set_file_name(
+                self.state
+                    .current_file
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("document.txt"),
+            )
+            .save_file()
+        {
+            std::fs::write(&path, &self.state.document_content)?;
+            self.state.current_file = Some(path);
+            self.state.is_document_modified = false;
+        }
+        Ok(())
+    }
+    
+    fn handle_file_drop(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.raw.hovered_files.is_empty()) {
+            self.is_dragging_file = true;
+        } else {
+            self.is_dragging_file = false;
+        }
+        
+        if ctx.input(|i| i.raw.dropped_files.len() > 0) {
+            if let Some(file) = ctx.input(|i| i.raw.dropped_files[0].path.clone()) {
+                if let Err(e) = self.open_file(file) {
+                    eprintln!("Failed to open dropped file: {}", e);
                 }
             }
-            
-            // Dictionary info
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Ok(dict) = self.spell_checker.get_current_dictionary() {
-                    ui.label(format!("📚 {} words", dict.word_count()));
-                }
-            });
-        });
+            self.drop_highlight = false;
+        }
+        
+        if ctx.input(|i| i.pointer.any_down()) && self.is_dragging_file {
+            self.drop_highlight = true;
+        } else {
+            self.drop_highlight = false;
+        }
     }
     
     fn show_menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::menu::bar(ui, |ui| {
-            // File menu
             ui.menu_button("File", |ui| {
                 if ui.button("📂 Open File...").clicked() {
                     if let Some(path) = FileDialog::new()
@@ -212,38 +237,44 @@ impl SpellCheckerApp {
                     ui.close_menu();
                 }
                 
-                ui.separator();
-                
-                // Language submenu
-                ui.menu_button("Language", |ui| {
-                    for lang in &self.state.available_languages {
-                        if ui
-                            .selectable_value(
-                                &mut self.state.selected_language,
-                                *lang,
-                                format!("{} {}", lang.flag_emoji(), lang.name()),
-                            )
-                            .clicked()
-                        {
-                            if let Err(e) = self.spell_checker.set_language(*lang) {
-                                eprintln!("Failed to change language: {}", e);
-                            }
-                            self.state.auto_detect_language = false;
-                            self.check_spelling();
-                            ui.close_menu();
-                        }
+                if ui.button("📁 Open Folder...").clicked() {
+                    if let Some(path) = FileDialog::new().pick_folder() {
+                        println!("Selected folder: {:?}", path);
                     }
-                    
-                    ui.separator();
-                    
-                    ui.checkbox(&mut self.state.auto_detect_language, "Auto-detect language");
-                });
+                    ui.close_menu();
+                }
                 
                 ui.separator();
                 
-                if ui.button("⚙️ Manage Dictionaries...").clicked() {
-                    self.show_dictionary_manager = true;
+                if ui.button("💾 Save").clicked() {
+                    if let Err(e) = self.save_file() {
+                        eprintln!("Failed to save file: {}", e);
+                    }
                     ui.close_menu();
+                }
+                
+                if ui.button("💾 Save As...").clicked() {
+                    if let Err(e) = self.save_as() {
+                        eprintln!("Failed to save file: {}", e);
+                    }
+                    ui.close_menu();
+                }
+                
+                ui.separator();
+                
+                if !self.state.recent_files.is_empty() {
+                    ui.menu_button("Recent Files", |ui| {
+                        for path in &self.state.recent_files {
+                            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                                if ui.button(format!("📄 {}", filename)).clicked() {
+                                    if let Err(e) = self.open_file(path.clone()) {
+                                        eprintln!("Failed to open file: {}", e);
+                                    }
+                                    ui.close_menu();
+                                }
+                            }
+                        }
+                    });
                 }
                 
                 ui.separator();
@@ -253,103 +284,10 @@ impl SpellCheckerApp {
                 }
             });
             
-            // Edit menu
             ui.menu_button("Edit", |ui| {
                 if ui.button("✏️ Check Spelling Now").clicked() {
                     self.check_spelling();
                     ui.close_menu();
                 }
                 
-                ui.checkbox(&mut self.state.auto_check, "🔄 Auto-check");
-                ui.checkbox(&mut self.state.show_line_numbers, "🔢 Show Line Numbers");
-                
-                ui.separator();
-                
-                if ui.button("🌐 Detect Language").clicked() {
-                    let detected = self.language_manager.detect_language(&self.state.document_content);
-                    self.state.selected_language = detected;
-                    self.state.auto_detect_language = false;
-                    if let Err(e) = self.spell_checker.set_language(detected) {
-                        eprintln!("Failed to set language: {}", e);
-                    }
-                    self.check_spelling();
-                    ui.close_menu();
-                }
-            });
-            
-            // Spacer
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Language selection in menu bar
-                self.show_language_selection(ui);
-                
-                // Current file indicator
-                if let Some(path) = &self.state.current_file {
-                    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    ui.label(egui::RichText::new(filename).color(egui::Color32::GRAY));
-                    
-                    if self.state.is_document_modified {
-                        ui.label(egui::RichText::new("●").color(egui::Color32::YELLOW));
-                    }
-                }
-            });
-        });
-    }
-    
-    fn show_status_bar(&mut self, ui: &mut egui::Ui) {
-        egui::menu::bar(ui, |ui| {
-            // Left side: Language info
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "{} {}",
-                    self.state.selected_language.flag_emoji(),
-                    self.state.selected_language.name()
-                ));
-                
-                if self.state.auto_detect_language {
-                    if let Some(detected) = self.stats.detected_language {
-                        if detected != self.state.selected_language {
-                            ui.colored_label(
-                                egui::Color32::LIGHT_BLUE,
-                                format!("(Detected: {})", detected.name()),
-                            );
-                        }
-                    }
-                }
-            });
-            
-            // Center: Spell check stats
-            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(format!("Words: {}", self.stats.total_words));
-                    
-                    if self.stats.errors > 0 {
-                        ui.colored_label(
-                            egui::Color32::RED,
-                            format!("Errors: {}", self.stats.errors),
-                        );
-                    } else if self.stats.total_words > 0 {
-                        ui.colored_label(
-                            egui::Color32::GREEN,
-                            "✓ No errors",
-                        );
-                    }
-                    
-                    ui.label(format!("({:.2}ms)", self.stats.last_check_duration.as_secs_f64() * 1000.0));
-                });
-            });
-            
-            // Right side: Status indicators
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.state.auto_check {
-                    ui.colored_label(egui::Color32::GREEN, "🔄 Auto");
-                }
-                
-                if let Ok(dict) = self.spell_checker.get_current_dictionary() {
-                    ui.label(format!("📚 {} words", dict.word_count()));
-                }
-            });
-        });
-    }
-    
-    // ... rest of the file remains the same ...
-}
+                ui.checkbox(&mut self.state.auto_check, "🔄 Auto
