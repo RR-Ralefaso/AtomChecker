@@ -29,7 +29,9 @@ A modern, multilingual spell checker with a beautiful Atom IDE-inspired interfac
 - Auto-detect 🌐
 
 ## Testers
+
 -**[Minenhle Majozi](mailto:Minenhlemajozi11@gmail.com)**
+
 -**[Belinda Mambo](mailto:nyashabelinda85@gmail.com)**
 
 ## Installation
