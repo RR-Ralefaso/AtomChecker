@@ -1,6 +1,6 @@
 [package]
 name = "spellchecker"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Rothang Ralph Ralefaso <rrralefaso@outlook.com>"]
 description = "An Atom IDE-inspired multilingual spell checker"
