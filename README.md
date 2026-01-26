@@ -1,6 +1,13 @@
 # SpellChecker
-    - Spell checker for english and afrikaans .helps look for typos and high light them.written in Rust
-    - used for txt files and possibly pdfs
+    - Spell checker for english and afrikaans .helps look for typos and high light them written in Rust
+    - used for files with the following file extensions:
+        - txt
+        - md
+        - rs
+        - py
+        - js
+        - css
+        - html
 
 # about
 

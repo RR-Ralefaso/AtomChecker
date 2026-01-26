@@ -3307,7 +3307,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spell_checker"
+name = "spellchecker"
 version = "0.1.0"
 dependencies = [
  "anyhow",

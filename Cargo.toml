@@ -1,5 +1,5 @@
 [package]
-name = "spell_checker"
+name = "spellchecker"
 version = "0.1.0"
 edition = "2021"
 authors = ["Rothang Ralph Ralefaso <rrralefaso@outlook.com>"]
@@ -14,16 +14,16 @@ cli = ["clap", "colored"]
 gui = ["eframe", "egui", "rfd"]
 
 [[bin]]
-name = "spell_checker"
+name = "spellchecker"
 path = "src/main.rs"
 
 [[bin]]
-name = "spell_checker_cli"
+name = "spellchecker_cli"
 path = "src/cli.rs"
 required-features = ["cli"]
 
 [lib]
-name = "spell_checker"
+name = "spellchecker"
 path = "src/lib.rs"
 
 [dependencies]
