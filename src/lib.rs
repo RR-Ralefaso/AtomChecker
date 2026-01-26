@@ -60,7 +60,7 @@ pub const APP_NAME: &str = "AtomSpell";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_AUTHOR: &str = "Rothang Ralph Ralefaso";
 pub const APP_REPOSITORY: &str = "https://github.com/RR-Ralefaso/SpellChecker";
-pub const SPONSOR_URL: &str = "https://github.com/sponsors";
+pub const SPONSOR_URL: &str = " https://github.com/sponsors/RR-Ralefaso";
 
 // Helper functions
 pub fn open_sponsor_page() -> Result<()> {
