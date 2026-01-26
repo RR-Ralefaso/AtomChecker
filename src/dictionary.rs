@@ -16,37 +16,37 @@ pub struct Dictionary {
     min_word_length: usize,
     language: Language,
     is_loaded: bool,
+    word_count_cache: usize,
 }
 
 impl Dictionary {
     pub fn new(language: Language) -> Self {
+        let word_pattern = Self::get_word_pattern_for_language(&language);
+        
         Self {
             words: HashSet::new(),
-            word_pattern: Self::get_word_pattern_for_language(&language),
+            word_pattern,
             ignore_pattern: None,
             min_word_length: 1,
             language,
             is_loaded: false,
+            word_count_cache: 0,
         }
     }
     
     fn get_word_pattern_for_language(language: &Language) -> Regex {
         match language {
             Language::Chinese | Language::Japanese => {
-                // CJK characters, numbers, and Latin alphabet
-                Regex::new(r"[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}a-zA-Z0-9'-]+").unwrap()
+                Regex::new(r"[\p{Han}\p{Hiragana}\p{Katakana}a-zA-Z0-9'-]+").unwrap()
             }
             Language::Korean => {
-                // Hangul, numbers, and Latin alphabet
                 Regex::new(r"[\p{Hangul}a-zA-Z0-9'-]+").unwrap()
             }
             Language::Russian => {
-                // Cyrillic, numbers, and Latin alphabet
                 Regex::new(r"[\p{Cyrillic}a-zA-Z0-9'-]+").unwrap()
             }
             _ => {
-                // Default: Latin alphabet, numbers, apostrophes, and hyphens
-                Regex::new(r"\b[\p{L}0-9'-]+\b").unwrap()
+                Regex::new(r"[\p{L}0-9'-]+").unwrap()
             }
         }
     }
@@ -61,18 +61,14 @@ impl Dictionary {
         if let Some(dict_path) = language_manager.get_dictionary_path(&self.language) {
             self.load_file(&dict_path)?;
             self.is_loaded = true;
-            println!("Loaded dictionary for {}: {} words", 
-                     self.language.name(), self.words.len());
-        } else {
+            self.word_count_cache = self.words.len();
+        } else if self.language != Language::English {
             // Try to load English as fallback
-            if self.language != Language::English {
-                println!("Dictionary for {} not found, falling back to English", 
-                         self.language.name());
-                let english_dict_path = language_manager.get_dictionary_path(&Language::English);
-                if let Some(path) = english_dict_path {
-                    self.load_file(&path)?;
-                    self.is_loaded = true;
-                }
+            let english_dict_path = language_manager.get_dictionary_path(&Language::English);
+            if let Some(path) = english_dict_path {
+                self.load_file(&path)?;
+                self.is_loaded = true;
+                self.word_count_cache = self.words.len();
             }
         }
         
@@ -84,17 +80,19 @@ impl Dictionary {
     }
     
     pub fn load_file(&mut self, path: &Path) -> anyhow::Result<()> {
-        let content = fs::read_to_string(path)?;
-        
-        // Handle different encodings
-        let (content, _, _) = encoding_rs::UTF_8.decode(&content.as_bytes());
-        let content = content.into_owned();
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(e) => {
+                // Try different encodings
+                let bytes = fs::read(path)?;
+                let (content, _, _) = encoding_rs::UTF_8.decode(&bytes);
+                content.into_owned()
+            }
+        };
         
         let new_words: HashSet<String> = content
-            .lines()
-            .par_bridge()
+            .par_lines()
             .map(|line| {
-                // Clean the word based on language
                 let word = match self.language {
                     Language::Chinese | Language::Japanese | Language::Korean => {
                         line.trim().to_string()
@@ -103,7 +101,6 @@ impl Dictionary {
                         line.trim().to_lowercase()
                     }
                 };
-                
                 word
             })
             .filter(|word| !word.is_empty())
@@ -111,24 +108,8 @@ impl Dictionary {
             .collect();
             
         self.words.extend(new_words);
+        self.word_count_cache = self.words.len();
         
-        Ok(())
-    }
-    
-    pub fn load_directory(&mut self, path: &Path) -> anyhow::Result<()> {
-        for entry in WalkDir::new(path)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path().extension()
-                    .map_or(false, |ext| ext == "txt" || ext == "dict")
-            })
-        {
-            self.load_file(entry.path())?;
-        }
-        
-        self.is_loaded = true;
         Ok(())
     }
     
@@ -137,28 +118,23 @@ impl Dictionary {
             return true;
         }
         
-        // Check ignore pattern
         if let Some(pattern) = &self.ignore_pattern {
             if pattern.is_match(word) {
                 return true;
             }
         }
         
-        // Check if word contains numbers (consider technical words valid)
         if word.chars().any(|c| c.is_numeric()) {
             return true;
         }
         
-        // Special handling for different languages
         match self.language {
             Language::Chinese | Language::Japanese | Language::Korean => {
-                // For CJK languages, check character by character
-                let normalized = if case_sensitive {
-                    word.to_string()
+                if case_sensitive {
+                    self.words.contains(word)
                 } else {
-                    word.to_lowercase()
-                };
-                self.words.contains(&normalized)
+                    self.words.contains(&word.to_lowercase())
+                }
             }
             _ => {
                 if case_sensitive {
@@ -171,7 +147,7 @@ impl Dictionary {
     }
     
     pub fn word_count(&self) -> usize {
-        self.words.len()
+        self.word_count_cache
     }
     
     pub fn get_words(&self) -> &HashSet<String> {
@@ -189,6 +165,24 @@ impl Dictionary {
     pub fn is_loaded(&self) -> bool {
         self.is_loaded
     }
+    
+    pub fn add_word(&mut self, word: &str) {
+        let normalized = match self.language {
+            Language::Chinese | Language::Japanese | Language::Korean => word.to_string(),
+            _ => word.to_lowercase(),
+        };
+        
+        self.words.insert(normalized);
+        self.word_count_cache = self.words.len();
+    }
+    
+    pub fn remove_word(&mut self, word: &str) -> bool {
+        let removed = self.words.remove(word);
+        if removed {
+            self.word_count_cache = self.words.len();
+        }
+        removed
+    }
 }
 
 #[derive(Clone)]
@@ -203,8 +197,10 @@ impl DictionaryManager {
         let dictionaries = Arc::new(DashMap::new());
         
         // Pre-load English dictionary as default
-        let english_dict = Dictionary::new(Language::English);
-        dictionaries.insert(Language::English, english_dict);
+        let mut english_dict = Dictionary::new(Language::English);
+        if let Ok(_) = english_dict.load() {
+            dictionaries.insert(Language::English, english_dict);
+        }
         
         Self {
             dictionaries,
@@ -213,16 +209,13 @@ impl DictionaryManager {
     }
     
     pub fn get_dictionary(&self, language: &Language) -> anyhow::Result<Dictionary> {
-        // Check if dictionary is already loaded
         if let Some(dict) = self.dictionaries.get(language) {
             return Ok(dict.clone());
         }
         
-        // Load new dictionary
         let mut dict = Dictionary::new(*language);
         dict.load()?;
         
-        // Cache it
         self.dictionaries.insert(*language, dict.clone());
         
         Ok(dict)
@@ -238,7 +231,7 @@ impl DictionaryManager {
     pub fn add_custom_dictionary(&mut self, path: PathBuf, language_code: String) -> anyhow::Result<()> {
         self.language_manager.add_custom_dictionary(path.clone(), language_code.clone());
         
-        let language = Language::Custom(language_code);
+        let language = Language::from_code(&language_code);
         let mut dict = Dictionary::new(language);
         dict.load_file(&path)?;
         
@@ -261,5 +254,9 @@ impl DictionaryManager {
     
     pub fn set_current_language(&mut self, language: Language) {
         self.language_manager.set_language(language);
+    }
+    
+    pub fn get_cached_dictionary(&self, language: &Language) -> Option<Dictionary> {
+        self.dictionaries.get(language).map(|d| d.clone())
     }
 }
