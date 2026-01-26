@@ -5,9 +5,6 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub struct TextEditor {
     analysis: Option<DocumentAnalysis>,
-    scroll_offset: f32,
-    cursor_pos: usize,
-    selection: Option<(usize, usize)>,
     line_height: f32,
     font_size: f32,
     show_whitespace: bool,
@@ -19,9 +16,6 @@ impl TextEditor {
     pub fn new() -> Self {
         Self {
             analysis: None,
-            scroll_offset: 0.0,
-            cursor_pos: 0,
-            selection: None,
             line_height: 24.0,
             font_size: 14.0,
             show_whitespace: false,
@@ -69,10 +63,6 @@ impl TextEditor {
         if response.changed() {
             *modified = true;
         }
-        
-        // Note: Getting exact cursor position in egui is complex and requires galley information
-        // For simplicity, we'll skip cursor position tracking for now
-        // This doesn't affect the spell checking functionality
         
         // Draw custom error highlighting on top
         self.draw_error_highlights(ui, &response.rect, show_line_numbers);

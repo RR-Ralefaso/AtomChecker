@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::egui;
-use spellchecker::SpellCheckerApp;
+use spellchecker::gui::SpellCheckerApp;
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
@@ -10,9 +10,10 @@ fn main() -> Result<(), eframe::Error> {
             .with_min_inner_size([800.0, 600.0])
             .with_title("AtomSpell - Atom IDE Inspired Spell Checker")
             .with_icon(
-                // Note: You'll need to create an icon file or remove this line
-                // eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icons/icon.png")[..])
-                //     .unwrap(),
+                // Note: This requires an icon file at assets/icons/icon.png
+                // If you don't have an icon, remove this line or create one
+                eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icons/icon.png")[..])
+                     .unwrap()
             ),
         ..Default::default()
     };

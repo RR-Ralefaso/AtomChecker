@@ -9,6 +9,7 @@ pub mod util;
 
 pub use checker::{DocumentAnalysis, SpellChecker, WordCheck};
 pub use dictionary::DictionaryManager;
+pub use gui::SpellCheckerApp;
 pub use language::{Language, LanguageManager};
 
 #[derive(Debug, thiserror::Error)]
