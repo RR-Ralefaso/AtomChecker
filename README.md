@@ -28,6 +28,9 @@ A modern, multilingual spell checker with a beautiful Atom IDE-inspired interfac
 - Korean 🇰🇷
 - Auto-detect 🌐
 
+## Testers
+    - **Minenhle Majozi** <Minenhlemajozi11@gmail.com>
+
 ## Installation
 
 ### From Source
