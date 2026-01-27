@@ -26,6 +26,7 @@ required-features = ["cli"]
 name = "spellchecker"
 path = "src/lib.rs"
 
+
 [dependencies]
 # GUI dependencies
 eframe = { version = "0.27", features = ["persistence"], optional = true }
@@ -60,3 +61,5 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+
+
