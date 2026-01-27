@@ -9,7 +9,7 @@ pub mod theme;
 pub mod util;
 
 // Re-export common types for easier access
-pub use checker::{DocumentAnalysis, SpellChecker, WordCheck};
+pub use checker::{DocumentAnalysis, SpellChecker, WordCheck, WordType};
 pub use dictionary::DictionaryManager;
 pub use gui::SpellCheckerApp;
 pub use language::{Language, LanguageManager};
@@ -58,9 +58,9 @@ pub type Result<T> = std::result::Result<T, SpellCheckerError>;
 // Constants
 pub const APP_NAME: &str = "AtomSpell";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const APP_AUTHOR: &str = "Rothang Ralph Ralefaso";
+pub const APP_AUTHOR: &str = "RR-RALEFASO";
 pub const APP_REPOSITORY: &str = "https://github.com/RR-Ralefaso/SpellChecker";
-pub const SPONSOR_URL: &str = " https://github.com/sponsors/RR-Ralefaso";
+pub const SPONSOR_URL: &str = "https://github.com/sponsors/RR-Ralefaso";
 
 // Helper functions
 pub fn open_sponsor_page() -> Result<()> {
@@ -69,4 +69,26 @@ pub fn open_sponsor_page() -> Result<()> {
 
 pub fn open_repository() -> Result<()> {
     open::that(APP_REPOSITORY).map_err(|e| SpellCheckerError::Unknown(e.into()))
+}
+
+// Global configuration
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub enable_auto_save: bool,
+    pub auto_save_interval: u64,
+    pub max_recent_files: usize,
+    pub enable_animations: bool,
+    pub enable_advanced_typo_detection: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            enable_auto_save: true,
+            auto_save_interval: 30,
+            max_recent_files: 10,
+            enable_animations: true,
+            enable_advanced_typo_detection: true,
+        }
+    }
 }
