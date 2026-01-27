@@ -11,11 +11,7 @@ pub struct TextEditor {
     error_cache: HashMap<usize, WordCheck>,
     last_analysis: Option<DocumentAnalysis>,
     programming_language: Option<String>,
-    syntax_highlighting: bool,
     scroll_offset: f32,
-    selection_start: Option<usize>,
-    selection_end: Option<usize>,
-    cursor_position: usize,
 }
 
 impl Default for TextEditor {
@@ -34,11 +30,7 @@ impl TextEditor {
             error_cache: HashMap::new(),
             last_analysis: None,
             programming_language: None,
-            syntax_highlighting: true,
             scroll_offset: 0.0,
-            selection_start: None,
-            selection_end: None,
-            cursor_position: 0,
         }
     }
     

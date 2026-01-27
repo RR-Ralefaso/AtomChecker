@@ -1,0 +1,11 @@
+building windows
+=================
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu
+
+making linux portable version
+=============================
+mkdir -p ~/Desktop/SpellCheckerPortable
+cp ./target/release/spellchecker ~/Desktop/SpellCheckerPortable/
+cp -r assets/ ~/Desktop/SpellCheckerPortable/
+cp -r src/dictionary/ ~/Desktop/SpellCheckerPortable/
