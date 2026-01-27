@@ -109,7 +109,7 @@ impl Language {
             "jpn" | "ja" | "japanese" => Language::Japanese,
             "kor" | "ko" | "korean" => Language::Korean,
             "auto" | "autodetect" => Language::AutoDetect,
-            _ => Language::English, // Default fallback
+            _ => Language::English,
         }
     }
     
@@ -117,7 +117,6 @@ impl Language {
         static COMMON_WORDS: Lazy<HashMap<Language, Vec<&'static str>>> = Lazy::new(|| {
             let mut map = HashMap::new();
             
-            // English common words
             map.insert(Language::English, vec![
                 "the", "and", "that", "have", "for", "with", "this", "from", "they", "would",
                 "will", "what", "there", "their", "about", "which", "when", "who", "them",
@@ -126,7 +125,6 @@ impl Language {
                 "two", "how", "our", "work", "first", "well", "way", "even", "new", "want"
             ]);
             
-            // Afrikaans common words
             map.insert(Language::Afrikaans, vec![
                 "die", "en", "het", "vir", "om", "wat", "in", "is", "jy", "ek",
                 "nie", "sy", "ons", "hulle", "daar", "maar", "my", "haar", "so", "by",
@@ -135,7 +133,6 @@ impl Language {
                 "wees", "gewees", "het", "word", "waar", "kom", "laat", "dink", "sien", "nous"
             ]);
             
-            // French common words
             map.insert(Language::French, vec![
                 "le", "la", "et", "que", "dans", "un", "est", "pour", "des", "les",
                 "une", "pas", "son", "avec", "il", "elle", "dans", "qui", "mais", "nous",
@@ -144,7 +141,21 @@ impl Language {
                 "sans", "autre", "aussi", "bien", "si", "y", "ou", "où", "lui", "donc"
             ]);
             
-            // Add more languages as needed...
+            map.insert(Language::Spanish, vec![
+                "el", "la", "de", "que", "y", "a", "en", "un", "ser", "se",
+                "no", "haber", "por", "con", "su", "para", "como", "estar", "tener", "le",
+                "lo", "todo", "pero", "más", "hacer", "o", "poder", "decir", "este", "ir",
+                "otro", "ese", "la", "si", "me", "ya", "ver", "porque", "dar", "cuando",
+                "él", "muy", "sin", "vez", "mucho", "saber", "qué", "sobre", "mi", "alguno"
+            ]);
+            
+            map.insert(Language::German, vec![
+                "der", "die", "und", "in", "den", "von", "zu", "das", "mit", "sich",
+                "des", "auf", "für", "ist", "im", "dem", "nicht", "ein", "Die", "eine",
+                "als", "auch", "es", "an", "werden", "aus", "er", "hat", "dass", "sie",
+                "nach", "wird", "bei", "einer", "Der", "um", "am", "sind", "noch", "wie"
+            ]);
+            
             map
         });
         
@@ -152,18 +163,15 @@ impl Language {
         let words: Vec<&str> = text_lower.split_whitespace().collect();
         
         if words.len() < 3 {
-            // Not enough text to detect language reliably
             return vec![(Language::English, 100.0)];
         }
         
         let mut scores = HashMap::new();
         
-        // Check for each language
         for (language, common_words) in COMMON_WORDS.iter() {
             let mut matches = 0;
             let mut total_checked = 0;
             
-            // Check first 50 words for common words
             for word in words.iter().take(50) {
                 total_checked += 1;
                 if common_words.contains(word) {
@@ -173,44 +181,40 @@ impl Language {
             
             if total_checked > 0 {
                 let score = (matches as f32 / total_checked as f32) * 100.0;
-                if score > 10.0 { // Only include if we have reasonable confidence
+                if score > 10.0 {
                     scores.insert(*language, score);
                 }
             }
         }
         
-        // Check for CJK characters
         let cjk_chars: Vec<char> = text.chars()
             .filter(|c| {
-                ('\u{4E00}' <= *c && *c <= '\u{9FFF}') || // Chinese
-                ('\u{3040}' <= *c && *c <= '\u{309F}') || // Hiragana
-                ('\u{30A0}' <= *c && *c <= '\u{30FF}') || // Katakana
-                ('\u{AC00}' <= *c && *c <= '\u{D7AF}')    // Hangul
+                ('\u{4E00}' <= *c && *c <= '\u{9FFF}') ||
+                ('\u{3040}' <= *c && *c <= '\u{309F}') ||
+                ('\u{30A0}' <= *c && *c <= '\u{30FF}') ||
+                ('\u{AC00}' <= *c && *c <= '\u{D7AF}')
             })
             .collect();
         
         let cjk_ratio = cjk_chars.len() as f32 / text.chars().count().max(1) as f32;
         
         if cjk_ratio > 0.3 {
-            if text.contains('\u{4E00}') { // Chinese
+            if text.contains('\u{4E00}') {
                 scores.insert(Language::Chinese, 100.0);
-            } else if text.contains('\u{3040}') || text.contains('\u{30A0}') { // Japanese
+            } else if text.contains('\u{3040}') || text.contains('\u{30A0}') {
                 scores.insert(Language::Japanese, 100.0);
-            } else if text.contains('\u{AC00}') { // Korean
+            } else if text.contains('\u{AC00}') {
                 scores.insert(Language::Korean, 100.0);
             }
         }
         
-        // If no language detected with confidence, default to English
         if scores.is_empty() {
             scores.insert(Language::English, 80.0);
         }
         
-        // Sort by score (highest first)
         let mut sorted_scores: Vec<(Language, f32)> = scores.into_iter().collect();
         sorted_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         
-        // Keep top 3
         sorted_scores.truncate(3);
         sorted_scores
     }
@@ -238,18 +242,16 @@ impl LanguageManager {
             dictionary_paths: HashMap::new(),
         };
         
-        // Scan for available dictionary files
         manager.scan_dictionaries();
-        
         manager
     }
     
     fn scan_dictionaries(&mut self) {
-        // Check in multiple locations
         let locations = vec![
-            PathBuf::from("src/dictionary"), // Project directory
-            PathBuf::from("dictionary"),     // Alternative location
-            Self::system_dict_dir(),         // System directory
+            PathBuf::from("src/dictionary"),
+            PathBuf::from("dictionary"),
+            Self::system_dict_dir(),
+            PathBuf::from("."),
         ];
         
         for location in locations {
@@ -258,15 +260,12 @@ impl LanguageManager {
                     let path = entry.path();
                     if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("txt") {
                         if let Some(filename) = path.file_stem().and_then(|n| n.to_str()) {
-                            // Check for dictionary(lang) pattern
                             if let Some(lang_code) = filename
                                 .strip_prefix("dictionary(")
                                 .and_then(|s| s.strip_suffix(")"))
                             {
                                 let language = Language::from_code(lang_code);
                                 self.dictionary_paths.insert(language, path.clone());
-                                
-                                println!("Found dictionary: {:?} -> {:?}", language.name(), path);
                             }
                         }
                     }
@@ -276,25 +275,26 @@ impl LanguageManager {
     }
     
     pub fn dictionary_dir() -> PathBuf {
-        // First check project directory
         let project_path = PathBuf::from("src/dictionary");
         if project_path.exists() {
             return project_path;
         }
         
-        // Fallback to current directory
+        let current_path = PathBuf::from("dictionary");
+        if current_path.exists() {
+            return current_path;
+        }
+        
         PathBuf::from(".")
     }
     
     pub fn system_dict_dir() -> PathBuf {
-        // Use directories crate to find system data directory
         directories::ProjectDirs::from("com", "ralefaso", "AtomSpell")
             .map(|dirs| dirs.data_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."))
     }
     
     pub fn user_dict_dir() -> PathBuf {
-        // Create user dictionary directory if it doesn't exist
         let mut path = Self::system_dict_dir();
         path.push("user_dictionaries");
         std::fs::create_dir_all(&path).ok();
@@ -305,16 +305,13 @@ impl LanguageManager {
         match language {
             Language::AutoDetect => None,
             lang => {
-                // Check if we already have path cached
                 if let Some(path) = self.dictionary_paths.get(lang) {
                     if path.exists() {
                         return Some(path.clone());
                     }
                 }
                 
-                // Try to find dictionary file
                 if let Some(filename) = lang.dictionary_filename() {
-                    // Check in multiple locations
                     let locations = vec![
                         Self::dictionary_dir().join(&filename),
                         PathBuf::from("src/dictionary").join(&filename),
@@ -363,6 +360,6 @@ impl LanguageManager {
             }
         }
         
-        Language::English // Default fallback
+        Language::English
     }
 }

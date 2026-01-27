@@ -41,6 +41,10 @@ enum Commands {
         /// Case sensitive checking
         #[arg(short = 'c', long)]
         case_sensitive: bool,
+        
+        /// Output JSON format
+        #[arg(long)]
+        json: bool,
     },
     
     /// Analyze word frequency
@@ -55,6 +59,10 @@ enum Commands {
         /// Language for word extraction
         #[arg(short, long, default_value = "eng")]
         language: String,
+        
+        /// Output JSON format
+        #[arg(long)]
+        json: bool,
     },
     
     /// Create a dictionary from a text file
@@ -68,6 +76,10 @@ enum Commands {
         /// Language code
         #[arg(short, long, default_value = "eng")]
         lang: String,
+        
+        /// Minimum word length
+        #[arg(short = 'm', long, default_value_t = 3)]
+        min_length: usize,
     },
     
     /// Check spelling from stdin
@@ -79,6 +91,17 @@ enum Commands {
         /// Output suggestions
         #[arg(short, long)]
         suggest: bool,
+        
+        /// Output JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    
+    /// Interactive mode
+    Interactive {
+        /// Language to use
+        #[arg(short, long, default_value = "eng")]
+        language: String,
     },
 }
 
@@ -87,89 +110,112 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Check { file, language, suggest, stats, case_sensitive } => {
+        Commands::Check { file, language, suggest, stats, case_sensitive, json } => {
             let content = std::fs::read_to_string(&file)?;
             let language = Language::from_code(&language);
             
-            println!("{}", format!("Checking '{}' in {}...", file.display(), language.name()).bold());
-            println!("{}", "-".repeat(50));
+            if !json {
+                println!("{}", format!("Checking '{}' in {}...", file.display(), language.name()).bold());
+                println!("{}", "-".repeat(50));
+            }
             
             let mut checker = SpellChecker::new(language)?;
             checker.enable_suggestions(suggest);
             checker.set_case_sensitive(case_sensitive);
             
-            let analysis = checker.check_document(&content);
+            let analysis = checker.check_document(&content, Some(&file.to_string_lossy()));
             
-            // Print results
-            println!("\n{}", "Results:".bold().underline());
-            println!("  📊 Total words: {}", analysis.total_words);
-            println!("  ❌ Misspelled: {}", analysis.misspelled_words);
-            println!("  ✅ Accuracy: {:.1}%", analysis.accuracy);
-            println!("  ⚡ Check time: {}ms", analysis.check_duration_ms);
-            
-            if analysis.misspelled_words > 0 {
-                println!("\n{}", "Errors found:".red().bold().underline());
-                for word in analysis.words.iter().filter(|w| !w.is_correct) {
-                    println!("\n  Line {}: '{}'", word.line, word.word.red().bold());
-                    if suggest && !word.suggestions.is_empty() {
-                        println!("    💡 Suggestions: {}", word.suggestions.join(", ").green());
-                    }
-                }
-                println!("\n{}", format!("Total errors: {}", analysis.misspelled_words).red());
-            } else if analysis.total_words > 0 {
-                println!("\n{}", "✓ No spelling errors found!".green().bold());
-            }
-            
-            if stats {
-                let reading_time = reading_time(&content);
-                let is_cjk = matches!(language, Language::Chinese | Language::Japanese | Language::Korean);
-                let freq = word_frequency(&content, is_cjk);
-                let common = most_common_words(&freq, 5);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&analysis)?);
+            } else {
+                println!("\n{}", "Results:".bold().underline());
+                println!("  📊 Total words: {}", analysis.total_words);
+                println!("  🔤 Unique words: {}", analysis.unique_words);
+                println!("  ❌ Misspelled: {}", analysis.misspelled_words);
+                println!("  ✅ Accuracy: {:.1}%", analysis.accuracy);
+                println!("  ⚡ Check time: {}ms", analysis.check_duration_ms);
                 
-                println!("\n{}", "Statistics:".bold().underline());
-                println!("  ⏱️  Reading time: {} min {} sec", reading_time.0, reading_time.1);
-                println!("  🔤 Unique words: {}", freq.len());
-                println!("  📈 Most common words:");
-                for (word, count) in common {
-                    println!("    • {}: {}", word.cyan(), count);
+                if analysis.misspelled_words > 0 {
+                    println!("\n{}", "Errors found:".red().bold().underline());
+                    for word in analysis.words.iter().filter(|w| !w.is_correct) {
+                        println!("\n  Line {}: '{}'", word.line, word.word.red().bold());
+                        if suggest && !word.suggestions.is_empty() {
+                            println!("    💡 Suggestions: {}", word.suggestions.join(", ").green());
+                        }
+                    }
+                    println!("\n{}", format!("Total errors: {}", analysis.misspelled_words).red());
+                } else if analysis.total_words > 0 {
+                    println!("\n{}", "✓ No spelling errors found!".green().bold());
                 }
-                println!("  📚 Dictionary size: {} words", checker.word_count());
+                
+                if stats {
+                    let reading_time = reading_time(&content);
+                    let is_cjk = matches!(language, Language::Chinese | Language::Japanese | Language::Korean);
+                    let is_code = is_code_file(&file.to_string_lossy());
+                    let freq = word_frequency(&content, is_cjk, is_code);
+                    let common = most_common_words(&freq, 5);
+                    
+                    println!("\n{}", "Statistics:".bold().underline());
+                    println!("  ⏱️  Reading time: {} min {} sec", reading_time.0, reading_time.1);
+                    println!("  🔤 Unique words: {}", freq.len());
+                    println!("  📈 Most common words:");
+                    for (word, count) in common {
+                        println!("    • {}: {}", word.cyan(), count);
+                    }
+                    println!("  📚 Dictionary size: {} words", checker.word_count());
+                }
             }
         }
         
-        Commands::Frequency { file, top, language } => {
+        Commands::Frequency { file, top, language, json } => {
             let content = std::fs::read_to_string(&file)?;
             let lang = Language::from_code(&language);
             let is_cjk = matches!(lang, Language::Chinese | Language::Japanese | Language::Korean);
-            let freq = word_frequency(&content, is_cjk);
+            let is_code = is_code_file(&file.to_string_lossy());
+            let freq = word_frequency(&content, is_cjk, is_code);
             let common = most_common_words(&freq, top);
             
-            println!("{}", format!("Top {} words in '{}':", top, file.display()).bold());
-            println!("{}", "=".repeat(50));
-            println!("{:<25} {:>15}", "Word", "Frequency");
-            println!("{}", "-".repeat(50));
-            
-            for (word, count) in common {
-                println!("{:<25} {:>15}", word, count.to_string().yellow());
-            }
-            
-            let total_words: usize = freq.values().sum();
-            println!("{}", "=".repeat(50));
-            println!("{:<25} {:>15}", "Total unique words:", freq.len().to_string().green());
-            println!("{:<25} {:>15}", "Total word count:", total_words.to_string().green());
-            
-            if total_words > 0 {
-                let reading_time = reading_time(&content);
-                println!("{:<25} {:>15}", "Reading time:", format!("{}m {}s", reading_time.0, reading_time.1).blue());
+            if json {
+                let result = serde_json::json!({
+                    "file": file.to_string_lossy(),
+                    "language": lang.name(),
+                    "total_unique_words": freq.len(),
+                    "total_word_count": freq.values().sum::<usize>(),
+                    "top_words": common
+                });
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("{}", format!("Top {} words in '{}':", top, file.display()).bold());
+                println!("{}", "=".repeat(50));
+                println!("{:<25} {:>15}", "Word", "Frequency");
+                println!("{}", "-".repeat(50));
+                
+                for (word, count) in common {
+                    println!("{:<25} {:>15}", word, count.to_string().yellow());
+                }
+                
+                let total_words: usize = freq.values().sum();
+                println!("{}", "=".repeat(50));
+                println!("{:<25} {:>15}", "Total unique words:", freq.len().to_string().green());
+                println!("{:<25} {:>15}", "Total word count:", total_words.to_string().green());
+                
+                if total_words > 0 {
+                    let reading_time = reading_time(&content);
+                    println!("{:<25} {:>15}", "Reading time:", format!("{}m {}s", reading_time.0, reading_time.1).blue());
+                }
             }
         }
         
-        Commands::CreateDict { input, output, lang } => {
+        Commands::CreateDict { input, output, lang, min_length } => {
             let content = std::fs::read_to_string(&input)?;
             let language = Language::from_code(&lang);
             let is_cjk = matches!(language, Language::Chinese | Language::Japanese | Language::Korean);
-            let words = extract_words(&content, is_cjk);
-            let unique_words: std::collections::HashSet<_> = words.into_iter().collect();
+            let is_code = is_code_file(&input.to_string_lossy());
+            let words = extract_words(&content, is_cjk, is_code);
+            let unique_words: std::collections::HashSet<_> = words
+                .into_iter()
+                .filter(|w| w.len() >= min_length)
+                .collect();
             
             let pb = ProgressBar::new(unique_words.len() as u64);
             pb.set_style(
@@ -193,9 +239,10 @@ fn main() -> anyhow::Result<()> {
             println!("   Language: {}", language.name());
             println!("   Words: {}", unique_words.len());
             println!("   Source: {}", input.display());
+            println!("   Min word length: {}", min_length);
         }
         
-        Commands::Stdin { language, suggest } => {
+        Commands::Stdin { language, suggest, json } => {
             use std::io::{self, Read};
             
             let mut content = String::new();
@@ -210,22 +257,93 @@ fn main() -> anyhow::Result<()> {
             let mut checker = SpellChecker::new(language)?;
             checker.enable_suggestions(suggest);
             
-            let analysis = checker.check_document(&content);
+            let analysis = checker.check_document(&content, None);
             
-            println!("{}", "Spell Check Results:".bold());
-            println!("Language: {}", language.name());
-            println!("Words checked: {}", analysis.total_words);
-            println!("Errors found: {}", analysis.misspelled_words);
-            println!("Accuracy: {:.1}%", analysis.accuracy);
-            
-            if analysis.misspelled_words > 0 {
-                println!("\nErrors:");
-                for word in analysis.words.iter().filter(|w| !w.is_correct) {
-                    print!("Line {}: '{}'", word.line, word.word.red());
-                    if suggest && !word.suggestions.is_empty() {
-                        print!(" → {}", word.suggestions.join(", ").green());
+            if json {
+                println!("{}", serde_json::to_string_pretty(&analysis)?);
+            } else {
+                println!("{}", "Spell Check Results:".bold());
+                println!("Language: {}", language.name());
+                println!("Words checked: {}", analysis.total_words);
+                println!("Unique words: {}", analysis.unique_words);
+                println!("Errors found: {}", analysis.misspelled_words);
+                println!("Accuracy: {:.1}%", analysis.accuracy);
+                
+                if analysis.misspelled_words > 0 {
+                    println!("\nErrors:");
+                    for word in analysis.words.iter().filter(|w| !w.is_correct) {
+                        print!("Line {}: '{}'", word.line, word.word.red());
+                        if suggest && !word.suggestions.is_empty() {
+                            print!(" → {}", word.suggestions.join(", ").green());
+                        }
+                        println!();
                     }
-                    println!();
+                }
+            }
+        }
+        
+        Commands::Interactive { language } => {
+            use std::io::{self, Write};
+            
+            let language = Language::from_code(&language);
+            let mut checker = SpellChecker::new(language)?;
+            checker.enable_suggestions(true);
+            
+            println!("{}", "AtomSpell Interactive Mode".bold().green());
+            println!("Language: {}", language.name());
+            println!("Type 'quit' or 'exit' to exit");
+            println!("Type 'check <text>' to check text");
+            println!("Type 'add <word>' to add word to dictionary");
+            println!("Type 'ignore <word>' to ignore word");
+            println!("{}", "-".repeat(50));
+            
+            loop {
+                print!("> ");
+                io::stdout().flush()?;
+                
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                let input = input.trim();
+                
+                if input.is_empty() {
+                    continue;
+                }
+                
+                if input == "quit" || input == "exit" {
+                    break;
+                }
+                
+                if input.starts_with("check ") {
+                    let text = &input[6..];
+                    let analysis = checker.check_document(text, None);
+                    
+                    println!("Words: {}, Errors: {}, Accuracy: {:.1}%", 
+                        analysis.total_words, analysis.misspelled_words, analysis.accuracy);
+                    
+                    if analysis.misspelled_words > 0 {
+                        for word in analysis.words.iter().filter(|w| !w.is_correct) {
+                            println!("  '{}' at line {}", word.word.red(), word.line);
+                            if !word.suggestions.is_empty() {
+                                println!("    Suggestions: {}", word.suggestions.join(", ").green());
+                            }
+                        }
+                    }
+                } else if input.starts_with("add ") {
+                    let word = &input[4..];
+                    if let Err(e) = checker.add_word_to_dictionary(word) {
+                        println!("Error: {}", e);
+                    } else {
+                        println!("Added '{}' to dictionary", word.green());
+                    }
+                } else if input.starts_with("ignore ") {
+                    let word = &input[7..];
+                    if let Err(e) = checker.ignore_word(word) {
+                        println!("Error: {}", e);
+                    } else {
+                        println!("Ignored '{}' for this session", word.yellow());
+                    }
+                } else {
+                    println!("Unknown command. Type 'help' for commands");
                 }
             }
         }

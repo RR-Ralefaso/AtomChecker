@@ -68,8 +68,6 @@ impl Dictionary {
             self.file_path = Some(dict_path);
         } else {
             println!("No dictionary file found for {}. Creating empty dictionary.", self.language.name());
-            // Create empty dictionary
-            self.words = HashSet::new();
         }
         
         // Load user-added words
@@ -113,7 +111,7 @@ impl Dictionary {
     fn normalize_word(&self, word: &str) -> String {
         match self.language {
             Language::Chinese | Language::Japanese | Language::Korean => {
-                word.to_string() // Keep original for CJK
+                word.to_string()
             }
             _ => {
                 word.to_lowercase()
@@ -143,9 +141,6 @@ impl Dictionary {
         path.push(format!("user_{}.txt", self.language.code()));
         
         let mut file = File::create(&path)?;
-        
-        // Get user-added words (words not in original dictionary)
-        // For simplicity, we'll save all words
         let mut sorted_words: Vec<&String> = self.words.iter().collect();
         sorted_words.sort();
         
@@ -179,7 +174,6 @@ impl Dictionary {
         path.push(format!("ignored_{}.txt", self.language.code()));
         
         let mut file = File::create(&path)?;
-        
         let mut sorted_words: Vec<&String> = self.ignored_words.iter().collect();
         sorted_words.sort();
         
@@ -190,7 +184,7 @@ impl Dictionary {
         Ok(())
     }
     
-    pub fn contains(&self, word: &str, case_sensitive: bool) -> bool {
+    pub fn contains(&self, word: &str, case_sensitive: bool, is_code_context: bool) -> bool {
         let word = word.trim();
         
         if word.is_empty() || word.len() < self.min_word_length {
@@ -203,17 +197,25 @@ impl Dictionary {
             return true;
         }
         
+        // Skip words that look like code identifiers in code context
+        if is_code_context && self.is_likely_code_identifier(word) {
+            return true;
+        }
+        
         // Skip words with numbers (except in CJK)
         if !matches!(self.language, Language::Chinese | Language::Japanese | Language::Korean) {
-            if word.chars().any(|c| c.is_ascii_digit()) {
-                return true;
+            if word.chars().any(|c| c.is_ascii_digit()) && word.len() > 3 {
+                // Allow numbers in longer words (like "word123")
+                let letter_count = word.chars().filter(|c| c.is_alphabetic()).count();
+                if letter_count < 3 {
+                    return true;
+                }
             }
         }
         
         // Check in dictionary
         match self.language {
             Language::Chinese | Language::Japanese | Language::Korean => {
-                // CJK languages: check exact match
                 self.words.contains(&normalized)
             }
             _ => {
@@ -224,6 +226,25 @@ impl Dictionary {
                 }
             }
         }
+    }
+    
+    pub fn is_likely_code_identifier(&self, word: &str) -> bool {
+        if word.len() < 2 || word.len() > 30 {
+            return false;
+        }
+        
+        let has_underscore = word.contains('_');
+        let has_mixed_case = word.chars().any(|c| c.is_uppercase()) && 
+                             word.chars().any(|c| c.is_lowercase());
+        let starts_with_letter = word.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false);
+        
+        (has_underscore && !word.starts_with('_') && !word.ends_with('_')) ||
+        (has_mixed_case && !word.chars().all(|c| c.is_uppercase())) ||
+        word.starts_with("get_") || word.starts_with("set_") ||
+        word.starts_with("is_") || word.starts_with("has_") ||
+        word.ends_with("_t") || word.ends_with("_ptr") ||
+        word.ends_with("Handler") || word.ends_with("Service") ||
+        word.ends_with("Manager") || word.ends_with("Factory")
     }
     
     pub fn word_count(&self) -> usize {
@@ -257,11 +278,9 @@ impl Dictionary {
             self.words.insert(normalized.clone());
             self.word_count_cache = self.words.len();
             
-            // Remove from ignored words if it was there
             self.ignored_words.remove(&normalized);
             self.ignored_count_cache = self.ignored_words.len();
             
-            // Save to user dictionary file
             self.save_user_words()?;
         }
         
@@ -275,7 +294,6 @@ impl Dictionary {
             self.ignored_words.insert(normalized);
             self.ignored_count_cache = self.ignored_words.len();
             
-            // Save ignored words
             self.save_ignored_words()?;
         }
         
@@ -285,10 +303,7 @@ impl Dictionary {
     pub fn clear_ignored_words(&mut self) -> anyhow::Result<()> {
         self.ignored_words.clear();
         self.ignored_count_cache = 0;
-        
-        // Save empty ignored words file
         self.save_ignored_words()?;
-        
         Ok(())
     }
     
@@ -296,14 +311,12 @@ impl Dictionary {
         let removed = self.words.remove(word);
         if removed {
             self.word_count_cache = self.words.len();
-            // Note: We don't remove from file, just from memory
         }
         removed
     }
     
     pub fn save_to_file(&self, path: &Path) -> anyhow::Result<()> {
         let mut file = File::create(path)?;
-        
         let mut sorted_words: Vec<&String> = self.words.iter().collect();
         sorted_words.sort();
         
@@ -347,16 +360,12 @@ impl DictionaryManager {
     }
     
     pub fn get_dictionary(&self, language: &Language) -> anyhow::Result<Dictionary> {
-        // Check if dictionary is already loaded
         if let Some(dict) = self.dictionaries.get(language) {
             return Ok(dict.clone());
         }
         
-        // Load dictionary
         let mut dict = Dictionary::new(*language);
         dict.load()?;
-        
-        // Cache it
         self.dictionaries.insert(*language, dict.clone());
         
         Ok(dict)

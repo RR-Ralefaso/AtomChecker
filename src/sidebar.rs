@@ -1,4 +1,4 @@
-use crate::checker::{DocumentAnalysis, SpellChecker};
+use crate::checker::{DocumentAnalysis, SpellChecker, WordType};
 use eframe::egui;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -12,8 +12,20 @@ pub struct Sidebar {
     pub find_text: String,
     pub replace_text: String,
     pub case_sensitive_find: bool,
-    pub whole_word_find: bool,
+    whole_word_find: bool,
     pub visible: bool,
+    pub dictionary_filter: String,
+    pub show_ignored_words: bool,
+    pub error_filter: ErrorFilter,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum ErrorFilter {
+    All,
+    HighConfidence,
+    CodeIdentifiers,
+    ProperNouns,
+    Numbers,
 }
 
 impl Default for Sidebar {
@@ -36,6 +48,9 @@ impl Sidebar {
             case_sensitive_find: false,
             whole_word_find: false,
             visible: true,
+            dictionary_filter: String::new(),
+            show_ignored_words: false,
+            error_filter: ErrorFilter::All,
         }
     }
     
@@ -53,7 +68,6 @@ impl Sidebar {
         on_clear_ignored: &mut bool,
     ) {
         ui.vertical(|ui| {
-            // Tabs for different sidebar views
             ui.horizontal(|ui| {
                 if ui.selectable_label(self.show_dictionary, "📚 Dictionary").clicked() {
                     self.reset_tabs();
@@ -81,9 +95,10 @@ impl Sidebar {
                 }
             });
             
+            ui.add_space(5.0);
             ui.separator();
+            ui.add_space(5.0);
             
-            // Show selected view
             if self.show_dictionary {
                 self.show_dictionary_view(ui, spell_checker, on_add_word, on_ignore_word, 
                     on_import_dict, on_export_dict, on_clear_ignored);
@@ -119,7 +134,6 @@ impl Sidebar {
     ) {
         ui.heading("Dictionary");
         
-        // Language info
         ui.horizontal(|ui| {
             ui.label("Language:");
             ui.label(spell_checker.current_language().name());
@@ -127,63 +141,88 @@ impl Sidebar {
         });
         
         ui.horizontal(|ui| {
-            ui.label("Words in dictionary:");
+            ui.label("Dictionary words:");
             ui.label(format!("{}", spell_checker.word_count()));
         });
         
+        ui.horizontal(|ui| {
+            ui.label("User words:");
+            ui.label(format!("{}", spell_checker.user_word_count()));
+        });
+        
+        ui.horizontal(|ui| {
+            ui.label("Ignored words:");
+            ui.label(format!("{}", spell_checker.ignored_word_count()));
+        });
+        
         ui.separator();
         
-        // Add word section
-        ui.heading("Add Word to Dictionary");
+        ui.heading("Add Word");
         ui.horizontal(|ui| {
             let mut new_word = String::new();
             let response = ui.text_edit_singleline(&mut new_word);
+            
             if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !new_word.is_empty() {
-                *on_add_word = Some(new_word.clone());
+                if crate::util::is_valid_word(&new_word) {
+                    *on_add_word = Some(new_word.clone());
+                }
             }
-            if ui.button("Add").clicked() && !new_word.is_empty() {
+            
+            let add_enabled = !new_word.is_empty() && crate::util::is_valid_word(&new_word);
+            if ui.add_enabled(add_enabled, egui::Button::new("Add")).clicked() {
                 *on_add_word = Some(new_word.clone());
             }
         });
-        ui.label("Adds word to user dictionary for current language");
+        
+        ui.label("Adds word to user dictionary permanently");
         
         ui.separator();
         
-        // Ignore word section
-        ui.heading("Ignore Word (Session Only)");
+        ui.heading("Ignore Word");
         ui.horizontal(|ui| {
             let mut ignore_word = String::new();
             let response = ui.text_edit_singleline(&mut ignore_word);
+            
             if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ignore_word.is_empty() {
-                *on_ignore_word = Some(ignore_word.clone());
+                if crate::util::is_valid_word(&ignore_word) {
+                    *on_ignore_word = Some(ignore_word.clone());
+                }
             }
-            if ui.button("Ignore").clicked() && !ignore_word.is_empty() {
+            
+            let ignore_enabled = !ignore_word.is_empty() && crate::util::is_valid_word(&ignore_word);
+            if ui.add_enabled(ignore_enabled, egui::Button::new("Ignore")).clicked() {
                 *on_ignore_word = Some(ignore_word.clone());
             }
         });
-        ui.label("Ignores word only for current session");
+        
+        ui.label("Ignores word for current session only");
         
         ui.separator();
         
-        // Dictionary actions
         ui.heading("Dictionary Management");
         ui.horizontal_wrapped(|ui| {
-            if ui.button("📥 Import Dictionary").clicked() {
+            if ui.button("📥 Import").clicked() {
                 *on_import_dict = true;
             }
-            if ui.button("📤 Export Dictionary").clicked() {
+            if ui.button("📤 Export").clicked() {
                 *on_export_dict = true;
             }
-            if ui.button("🗑️ Clear Ignored Words").clicked() {
+            if ui.button("🗑️ Clear Ignored").clicked() {
                 *on_clear_ignored = true;
             }
         });
         
+        ui.checkbox(&mut self.show_ignored_words, "Show ignored words");
+        
+        ui.horizontal(|ui| {
+            ui.label("Filter:");
+            ui.text_edit_singleline(&mut self.dictionary_filter);
+        });
+        
         ui.separator();
         
-        // Help text
-        ui.label("ℹ️ Note: Added words are saved to user dictionary files.");
-        ui.label("Ignored words are only for the current session.");
+        ui.label("ℹ️ Added words are saved permanently");
+        ui.label("Ignored words are session-only");
     }
     
     fn show_errors_view(
@@ -194,31 +233,63 @@ impl Sidebar {
     ) {
         ui.heading("Spelling Errors");
         
+        ui.horizontal(|ui| {
+            ui.label("Filter:");
+            ui.radio_value(&mut self.error_filter, ErrorFilter::All, "All");
+            ui.radio_value(&mut self.error_filter, ErrorFilter::HighConfidence, "High Confidence");
+            ui.radio_value(&mut self.error_filter, ErrorFilter::CodeIdentifiers, "Code");
+            ui.radio_value(&mut self.error_filter, ErrorFilter::ProperNouns, "Proper Nouns");
+        });
+        
         if let Some(analysis) = analysis {
             if analysis.misspelled_words == 0 {
-                ui.colored_label(egui::Color32::GREEN, "✓ No spelling errors found!");
+                ui.colored_label(egui::Color32::GREEN, "✅ No spelling errors found!");
                 return;
             }
             
-            // Error list
+            let filtered_errors: Vec<&crate::checker::WordCheck> = analysis.words
+                .iter()
+                .filter(|w| !w.is_correct)
+                .filter(|w| match self.error_filter {
+                    ErrorFilter::All => true,
+                    ErrorFilter::HighConfidence => w.confidence >= 0.8,
+                    ErrorFilter::CodeIdentifiers => matches!(w.word_type, WordType::CodeIdentifier),
+                    ErrorFilter::ProperNouns => matches!(w.word_type, WordType::ProperNoun),
+                    ErrorFilter::Numbers => matches!(w.word_type, WordType::Number),
+                })
+                .collect();
+            
+            if filtered_errors.is_empty() {
+                ui.label("No errors match the current filter");
+                return;
+            }
+            
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for (idx, word) in analysis.words.iter().filter(|w| !w.is_correct).enumerate() {
+                for (idx, word) in filtered_errors.iter().enumerate() {
                     let is_selected = idx == self.selected_error_index;
                     
                     ui.horizontal(|ui| {
-                        // Error indicator
-                        ui.colored_label(egui::Color32::RED, "✗");
+                        let color = match word.word_type {
+                            WordType::CodeIdentifier => egui::Color32::BLUE,
+                            WordType::ProperNoun => egui::Color32::YELLOW,
+                            WordType::Acronym => egui::Color32::LIGHT_BLUE,
+                            _ => egui::Color32::RED,
+                        };
                         
-                        // Error word
+                        ui.colored_label(color, "✗");
+                        
                         if ui.selectable_label(is_selected, &word.word).clicked() {
                             self.selected_error_index = idx;
                         }
                         
-                        // Line info
                         ui.label(format!("(L{}:C{})", word.line, word.column));
+                        
+                        ui.colored_label(
+                            egui::Color32::GRAY,
+                            format!("{:.0}%", word.confidence * 100.0)
+                        );
                     });
                     
-                    // Suggestions
                     if !word.suggestions.is_empty() {
                         ui.indent("suggestions", |ui| {
                             ui.label("Suggestions:");
@@ -237,13 +308,11 @@ impl Sidebar {
                 }
             });
             
-            // Error count
             ui.separator();
             ui.horizontal(|ui| {
-                ui.label(format!("Total errors: {}", analysis.misspelled_words));
+                ui.label(format!("Errors: {}/{}", filtered_errors.len(), analysis.misspelled_words));
                 if analysis.misspelled_words > 0 {
-                    if ui.button("▶️ Fix All with First Suggestion").clicked() {
-                        // TODO: Implement fix all
+                    if ui.button("▶️ Fix All").clicked() {
                         ui.label("Feature coming soon...");
                     }
                 }
@@ -262,7 +331,6 @@ impl Sidebar {
         ui.heading("Document Statistics");
         
         if let Some(analysis) = analysis {
-            // Accuracy gauge
             ui.horizontal(|ui| {
                 ui.label("Accuracy:");
                 let gauge = egui::widgets::ProgressBar::new(analysis.accuracy / 100.0)
@@ -273,13 +341,17 @@ impl Sidebar {
             
             ui.separator();
             
-            // Stats grid
             egui::Grid::new("stats_grid")
                 .num_columns(2)
                 .spacing([10.0, 5.0])
+                .striped(true)
                 .show(ui, |ui| {
                     ui.label("Total words:");
                     ui.label(format!("{}", analysis.total_words));
+                    ui.end_row();
+                    
+                    ui.label("Unique words:");
+                    ui.label(format!("{}", analysis.unique_words));
                     ui.end_row();
                     
                     ui.label("Misspelled:");
@@ -308,14 +380,31 @@ impl Sidebar {
                     ui.label("Dictionary size:");
                     ui.label(format!("{} words", spell_checker.word_count()));
                     ui.end_row();
+                    
+                    ui.label("User dictionary:");
+                    ui.label(format!("{} words", spell_checker.user_word_count()));
+                    ui.end_row();
+                    
+                    ui.label("Check time:");
+                    ui.label(format!("{}ms", analysis.check_duration_ms));
+                    ui.end_row();
+                    
+                    if analysis.likely_code {
+                        ui.label("File type:");
+                        ui.colored_label(egui::Color32::BLUE, "Code");
+                        ui.end_row();
+                    }
                 });
             
-            // Reading time
             if analysis.total_words > 0 {
                 ui.separator();
                 let minutes = analysis.total_words / 200;
                 let seconds = ((analysis.total_words % 200) * 60) / 200;
-                ui.label(format!("Estimated reading time: {} min {} sec", minutes, seconds));
+                ui.label(format!("📖 Reading time: {} min {} sec", minutes, seconds));
+                
+                let characters = analysis.words.iter().map(|w| w.word.len()).sum::<usize>();
+                ui.label(format!("🔤 Average word length: {:.1} chars", 
+                    characters as f32 / analysis.total_words as f32));
             }
         } else {
             ui.label("No statistics available. Load a document first.");
@@ -327,15 +416,19 @@ impl Sidebar {
         
         ui.horizontal(|ui| {
             ui.label("Find:");
-            ui.text_edit_singleline(&mut self.find_text);
+            let response = ui.text_edit_singleline(&mut self.find_text);
             
-            if ui.button("🔍").clicked() && !self.find_text.is_empty() {
-                // Find functionality would be implemented in the editor
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.find_text.is_empty() {
+                // Find would be implemented
             }
         });
         
         ui.checkbox(&mut self.case_sensitive_find, "Case sensitive");
         ui.checkbox(&mut self.whole_word_find, "Whole word");
+        
+        if ui.button("Find Next").clicked() && !self.find_text.is_empty() {
+            // Find next occurrence
+        }
         
         if !self.find_text.is_empty() {
             let count = if self.case_sensitive_find {
@@ -374,7 +467,7 @@ impl Sidebar {
             }
             
             if ui.button("Replace All").clicked() && !self.find_text.is_empty() {
-                // TODO: Implement replace all
+                // Implement replace all
                 ui.label("Replace All coming soon...");
             }
         });

@@ -1,6 +1,6 @@
 use crate::dictionary::{Dictionary, DictionaryManager};
 use crate::language::Language;
-use crate::util::{sanitize_word, is_valid_word};
+use crate::util::{sanitize_word, is_valid_word, is_code_file, is_likely_code};
 use dashmap::DashMap;
 use rayon::prelude::*;
 use serde::Serialize;
@@ -13,24 +13,27 @@ use std::cmp::min;
 #[derive(Debug, Clone, Serialize)]
 pub struct WordCheck {
     pub word: String,
-    pub original: String, // Original casing
+    pub original: String,
     pub start: usize,
     pub end: usize,
     pub is_correct: bool,
     pub suggestions: Vec<String>,
     pub line: usize,
     pub column: usize,
-    pub confidence: f32, // How confident we are this is a typo
+    pub confidence: f32,
     pub word_type: WordType,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub enum WordType {
     Normal,
     CodeIdentifier,
     Acronym,
     ProperNoun,
     TechnicalTerm,
+    Number,
+    Symbol,
+    ShortWord,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,6 +48,7 @@ pub struct DocumentAnalysis {
     pub check_duration_ms: u128,
     pub likely_code: bool,
     pub file_type: Option<String>,
+    pub unique_words: usize,
 }
 
 pub struct SpellChecker {
@@ -60,6 +64,7 @@ pub struct SpellChecker {
     acronyms: HashSet<String>,
     code_patterns: HashSet<String>,
     confidence_threshold: f32,
+    enable_advanced_typo_detection: bool,
 }
 
 impl SpellChecker {
@@ -73,7 +78,7 @@ impl SpellChecker {
             // Continue with empty dictionary
         }
         
-        Ok(Self {
+        let mut checker = Self {
             dictionary_manager,
             current_language: language,
             suggestions_enabled: true,
@@ -86,35 +91,73 @@ impl SpellChecker {
             acronyms: HashSet::new(),
             code_patterns: HashSet::new(),
             confidence_threshold: 0.7,
-        })
+            enable_advanced_typo_detection: true,
+        };
+        
+        // Load user data
+        checker.load_user_data();
+        
+        Ok(checker)
+    }
+    
+    fn load_user_data(&mut self) {
+        // Load user dictionary
+        let user_dict_path = crate::language::LanguageManager::user_dict_dir()
+            .join(format!("user_{}.txt", self.current_language.code()));
+        
+        if let Ok(content) = fs::read_to_string(&user_dict_path) {
+            for line in content.lines() {
+                let word = line.trim().to_lowercase();
+                if !word.is_empty() {
+                    self.user_dictionary.insert(word);
+                }
+            }
+        }
+        
+        // Load proper nouns
+        let proper_nouns_path = crate::language::LanguageManager::user_dict_dir()
+            .join(format!("proper_{}.txt", self.current_language.code()));
+        
+        if let Ok(content) = fs::read_to_string(&proper_nouns_path) {
+            for line in content.lines() {
+                let word = line.trim().to_lowercase();
+                if !word.is_empty() {
+                    self.proper_nouns.insert(word);
+                }
+            }
+        }
+        
+        // Load common acronyms
+        self.acronyms.extend(vec![
+            "api", "http", "https", "url", "uri", "html", "css", "js", "ts",
+            "json", "xml", "sql", "nosql", "cpu", "gpu", "ram", "rom", "usb",
+            "ssd", "hdd", "lan", "wan", "vpn", "dns", "ip", "tcp", "udp",
+            "ftp", "ssh", "ssl", "tls", "csv", "pdf", "doc", "jpg", "png",
+            "gif", "mp3", "mp4", "avi", "mkv", "zip", "rar", "tar", "gz",
+            "exe", "dll", "so", "dylib", "bin", "iso", "img", "vm", "aws",
+            "gcp", "azure", "api", "ui", "ux", "cli", "gui", "ide", "sdk",
+        ].into_iter().map(String::from));
     }
     
     pub fn set_language(&mut self, language: Language) -> anyhow::Result<()> {
         if language != self.current_language {
             self.dictionary_manager.get_dictionary(&language)?;
             self.current_language = language;
-            self.cache.clear(); // Clear cache when language changes
-            self.load_user_data(); // Reload user data for new language
+            self.cache.clear();
+            self.load_user_data();
         }
         Ok(())
     }
     
-    fn load_user_data(&mut self) {
-        // Load user dictionary, proper nouns, etc. from files
-        // This is a simplified version
-        self.user_dictionary.clear();
-        self.proper_nouns.clear();
-        self.acronyms.clear();
-        
-        // In a real implementation, you'd load these from files
-        self.acronyms.extend(vec![
-            "API", "HTTP", "HTTPS", "URL", "URI", "HTML", "CSS", "JS", "TS",
-            "JSON", "XML", "SQL", "NoSQL", "CPU", "GPU", "RAM", "ROM", "USB",
-            "SSD", "HDD", "LAN", "WAN", "VPN", "DNS", "IP", "TCP", "UDP"
-        ].iter().map(|s| s.to_lowercase()));
+    pub fn current_language(&self) -> Language {
+        self.current_language
     }
     
-    pub fn check_document_with_context(&self, text: &str, filename: Option<&str>) -> DocumentAnalysis {
+    pub fn get_current_dictionary(&self) -> anyhow::Result<Dictionary> {
+        self.dictionary_manager.get_dictionary(&self.current_language)
+    }
+    
+    pub fn check_document(&self, text: &str, filename: Option<&str>) -> DocumentAnalysis {
         let start_time = std::time::Instant::now();
         
         let dictionary = match self.get_current_dictionary() {
@@ -131,40 +174,37 @@ impl SpellChecker {
                     check_duration_ms: 0,
                     likely_code: false,
                     file_type: filename.map(|f| f.to_string()),
+                    unique_words: 0,
                 };
             }
         };
         
         let is_cjk = matches!(self.current_language, Language::Chinese | Language::Japanese | Language::Korean);
-        let is_code = filename.map(|f| crate::util::is_code_file(f)).unwrap_or(false) ||
-                     crate::util::is_likely_code(text);
-        
-        let word_pattern = if is_cjk {
-            crate::util::CJK_WORD_REGEX.clone()
-        } else if is_code {
-            crate::util::CODE_WORD_REGEX.clone()
-        } else {
-            crate::util::WORD_REGEX.clone()
-        };
+        let is_code = filename.map(|f| is_code_file(f)).unwrap_or(false) || is_likely_code(text);
         
         let lines: Vec<&str> = text.lines().collect();
         let mut words = Vec::new();
         let mut suggestions_count = 0;
         let mut total_words = 0;
         let mut misspelled_words = 0;
+        let mut unique_words = HashSet::new();
         
         for (line_idx, line) in lines.iter().enumerate() {
             let line_num = line_idx + 1;
+            let mut column = 1;
+            
+            let word_pattern = if is_cjk {
+                crate::util::CJK_WORD_REGEX.clone()
+            } else if is_code {
+                crate::util::CODE_WORD_REGEX.clone()
+            } else {
+                crate::util::WORD_REGEX.clone()
+            };
             
             for mat in word_pattern.find_iter(line) {
                 let original_word = mat.as_str();
                 let start = mat.start();
                 let end = mat.end();
-                
-                // Skip very short words
-                if original_word.len() < 2 {
-                    continue;
-                }
                 
                 // Determine word type
                 let word_type = self.determine_word_type(original_word, is_code);
@@ -172,7 +212,7 @@ impl SpellChecker {
                 // Skip based on word type
                 if self.should_skip_word(original_word, &word_type) {
                     words.push(WordCheck {
-                        word: original_word.to_string(),
+                        word: original_word.to_lowercase(),
                         original: original_word.to_string(),
                         start,
                         end,
@@ -186,11 +226,12 @@ impl SpellChecker {
                     continue;
                 }
                 
-                let word_lower = if is_cjk { original_word.to_string() } else { original_word.to_lowercase() };
+                let word_lower = original_word.to_lowercase();
+                unique_words.insert(word_lower.clone());
                 
                 // Check in various dictionaries and lists
-                let is_correct = self.check_word_correctness(&word_lower, original_word, &word_type, &dictionary);
-                let confidence = self.calculate_confidence(original_word, &word_type, is_correct);
+                let is_correct = self.check_word_correctness(&word_lower, original_word, &word_type, &dictionary, is_code);
+                let confidence = self.calculate_confidence(original_word, &word_type, is_correct, is_code);
                 
                 total_words += 1;
                 if !is_correct && confidence >= self.confidence_threshold {
@@ -198,7 +239,7 @@ impl SpellChecker {
                 }
                 
                 let suggestions = if !is_correct && self.suggestions_enabled && confidence >= self.confidence_threshold {
-                    let sugg = self.get_suggestions(original_word, &dictionary, &word_type);
+                    let sugg = self.get_suggestions(&word_lower, &dictionary);
                     suggestions_count += sugg.len();
                     sugg
                 } else {
@@ -217,6 +258,8 @@ impl SpellChecker {
                     confidence,
                     word_type,
                 });
+                
+                column = end + 1;
             }
         }
         
@@ -239,10 +282,26 @@ impl SpellChecker {
             check_duration_ms: check_duration.as_millis(),
             likely_code: is_code,
             file_type: filename.map(|f| f.to_string()),
+            unique_words: unique_words.len(),
         }
     }
     
     fn determine_word_type(&self, word: &str, is_code: bool) -> WordType {
+        // Check for numbers
+        if word.chars().all(|c| c.is_numeric()) {
+            return WordType::Number;
+        }
+        
+        // Check for symbols
+        if word.chars().all(|c| !c.is_alphabetic()) {
+            return WordType::Symbol;
+        }
+        
+        // Check for short words
+        if word.len() <= 2 {
+            return WordType::ShortWord;
+        }
+        
         // Check for acronyms (all caps or with numbers)
         if word.chars().all(|c| c.is_uppercase() || c.is_numeric() || c == '_') && word.len() <= 6 {
             return WordType::Acronym;
@@ -250,7 +309,6 @@ impl SpellChecker {
         
         // Check for proper nouns (starts with capital, not at sentence start)
         if word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) && word.len() > 2 {
-            // Check if it's not a common word that happens to be capitalized
             let common_caps = ["I", "A", "The", "And", "But", "Or", "For", "Nor", "Yet", "So"];
             if !common_caps.contains(&word) {
                 return WordType::ProperNoun;
@@ -261,7 +319,8 @@ impl SpellChecker {
         if is_code && (word.contains('_') || 
                       (word.chars().any(|c| c.is_uppercase()) && word.chars().any(|c| c.is_lowercase())) ||
                       word.starts_with("get_") || word.starts_with("set_") ||
-                      word.ends_with("_t") || word.ends_with("_ptr")) {
+                      word.ends_with("_t") || word.ends_with("_ptr") ||
+                      word.ends_with("Handler") || word.ends_with("Service")) {
             return WordType::CodeIdentifier;
         }
         
@@ -275,26 +334,24 @@ impl SpellChecker {
     
     fn should_skip_word(&self, word: &str, word_type: &WordType) -> bool {
         match word_type {
+            WordType::Number | WordType::Symbol | WordType::ShortWord => true,
             WordType::Acronym => {
-                // Skip common acronyms
                 self.acronyms.contains(&word.to_lowercase())
             }
             WordType::CodeIdentifier => {
-                // Skip common code patterns
                 word.len() <= 3 || // Very short identifiers
                 word.chars().all(|c| c.is_numeric()) || // Numbers
                 word.starts_with("0x") || // Hex numbers
                 word.contains("__") // Python dunders
             }
             WordType::ProperNoun => {
-                // Skip if it's in our proper nouns list
                 self.proper_nouns.contains(&word.to_lowercase())
             }
             _ => false,
         }
     }
     
-    fn check_word_correctness(&self, word_lower: &str, original_word: &str, word_type: &WordType, dictionary: &Dictionary) -> bool {
+    fn check_word_correctness(&self, word_lower: &str, original_word: &str, word_type: &WordType, dictionary: &Dictionary, is_code: bool) -> bool {
         // Check ignore list
         if self.ignore_list.contains(word_lower) {
             return true;
@@ -312,16 +369,14 @@ impl SpellChecker {
         }
         
         // Check main dictionary
-        let in_dictionary = dictionary.contains(original_word, self.case_sensitive);
+        let in_dictionary = dictionary.contains(original_word, self.case_sensitive, is_code);
         
         // For proper nouns and acronyms, be more lenient
         let is_correct = match word_type {
             WordType::ProperNoun | WordType::Acronym => {
-                // Check if it looks reasonable
                 in_dictionary || self.looks_reasonable(original_word)
             }
             WordType::CodeIdentifier => {
-                // For code, we're more lenient
                 in_dictionary || original_word.len() <= 15
             }
             _ => in_dictionary,
@@ -332,12 +387,10 @@ impl SpellChecker {
     }
     
     fn looks_reasonable(&self, word: &str) -> bool {
-        // Check if a word looks like a reasonable proper noun or acronym
-        if word.is_empty() {
+        if word.is_empty() || word.len() > 25 {
             return false;
         }
         
-        // Check character composition
         let letters = word.chars().filter(|c| c.is_alphabetic()).count();
         let total = word.chars().count();
         
@@ -347,43 +400,37 @@ impl SpellChecker {
         
         let letter_ratio = letters as f32 / total as f32;
         
-        // Should be mostly letters
         letter_ratio > 0.7 &&
-        // Shouldn't have weird character repetitions
         !has_repeated_characters(word, 4) &&
-        // Should have vowel-consonant mix for longer words
         (word.len() <= 4 || has_vowels(word))
     }
     
-    fn calculate_confidence(&self, word: &str, word_type: &WordType, is_correct: bool) -> f32 {
+    fn calculate_confidence(&self, word: &str, word_type: &WordType, is_correct: bool, is_code: bool) -> f32 {
         if is_correct {
             return 1.0;
         }
         
-        let mut confidence = 0.5; // Base confidence
+        let mut confidence = 0.5;
         
-        // Adjust based on word characteristics
         match word_type {
             WordType::Normal => confidence *= 1.2,
-            WordType::CodeIdentifier => confidence *= 0.3, // Low confidence for code
+            WordType::CodeIdentifier => confidence *= if is_code { 0.3 } else { 0.8 },
             WordType::Acronym => confidence *= 0.4,
             WordType::ProperNoun => confidence *= 0.6,
             WordType::TechnicalTerm => confidence *= 0.8,
+            _ => confidence *= 0.2,
         }
         
-        // Adjust based on word length
         if word.len() < 3 {
-            confidence *= 0.3; // Very short words are hard to judge
+            confidence *= 0.3;
         } else if word.len() > 20 {
-            confidence *= 0.7; // Very long words might be technical
+            confidence *= 0.7;
         }
         
-        // Adjust based on character patterns
         if word.contains('_') || word.contains('-') {
-            confidence *= 1.1; // Compound words are more likely to be correct
+            confidence *= 1.1;
         }
         
-        // Check for common typo patterns
         if has_common_typo_patterns(word) {
             confidence *= 1.3;
         }
@@ -391,7 +438,136 @@ impl SpellChecker {
         confidence.min(1.0).max(0.0)
     }
     
-    // ... rest of the methods remain similar but updated to use new logic ...
+    fn get_suggestions(&self, word: &str, dictionary: &Dictionary) -> Vec<String> {
+        if word.len() <= 1 {
+            return Vec::new();
+        }
+        
+        let dict_words = dictionary.get_words();
+        let max_candidates = 2000;
+        
+        let candidates: Vec<&String> = dict_words.iter()
+            .filter(|w| {
+                let len_diff = (w.len() as isize - word.len() as isize).abs();
+                len_diff <= 3
+            })
+            .take(max_candidates)
+            .collect();
+        
+        let mut suggestions: Vec<(String, usize)> = candidates
+            .par_iter()
+            .map(|&dict_word| {
+                let distance = self.edit_distance(word, dict_word);
+                (dict_word.clone(), distance)
+            })
+            .filter(|(_, distance)| *distance <= 2)
+            .collect();
+        
+        suggestions.sort_by_key(|(_, distance)| *distance);
+        suggestions
+            .into_iter()
+            .take(self.max_suggestions)
+            .map(|(word, _)| word)
+            .collect()
+    }
+    
+    fn edit_distance(&self, a: &str, b: &str) -> usize {
+        crate::util::levenshtein_distance(a, b)
+    }
+    
+    pub fn add_word_to_dictionary(&mut self, word: &str) -> anyhow::Result<()> {
+        let sanitized = sanitize_word(word);
+        if !is_valid_word(&sanitized) {
+            return Ok(());
+        }
+        
+        let word_lower = sanitized.to_lowercase();
+        
+        // Update cache
+        let cache_key = format!("{}_{}", self.current_language.code(), word_lower);
+        self.cache.insert(cache_key, true);
+        
+        // Update ignore list (remove if present)
+        self.ignore_list.remove(&word_lower);
+        
+        // Update user dictionary
+        self.user_dictionary.insert(word_lower.clone());
+        
+        // Update dictionary file
+        let user_dict_path = crate::language::LanguageManager::user_dict_dir()
+            .join(format!("user_{}.txt", self.current_language.code()));
+        
+        let mut content = String::new();
+        if let Ok(existing) = fs::read_to_string(&user_dict_path) {
+            content = existing;
+        }
+        
+        if !content.lines().any(|line| line.trim() == word_lower) {
+            content.push_str(&format!("{}\n", word_lower));
+            fs::write(&user_dict_path, content)?;
+        }
+        
+        // Update dictionary manager
+        self.dictionary_manager.add_word_to_dictionary(&sanitized, self.current_language)?;
+        
+        Ok(())
+    }
+    
+    pub fn ignore_word(&mut self, word: &str) -> anyhow::Result<()> {
+        let sanitized = sanitize_word(word);
+        if is_valid_word(&sanitized) {
+            self.ignore_list.insert(sanitized.to_lowercase());
+        }
+        Ok(())
+    }
+    
+    pub fn clear_ignored_words(&mut self) {
+        self.ignore_list.clear();
+        self.cache.clear();
+    }
+    
+    pub fn import_dictionary(&mut self, path: &Path) -> anyhow::Result<()> {
+        let content = fs::read_to_string(path)?;
+        let detected_language = self.dictionary_manager.detect_language(&content);
+        let language_to_use = if detected_language != Language::English {
+            detected_language
+        } else {
+            self.current_language
+        };
+        
+        self.dictionary_manager.import_dictionary(path.to_path_buf(), language_to_use)?;
+        self.cache.clear();
+        
+        Ok(())
+    }
+    
+    pub fn export_dictionary(&self, path: &Path) -> anyhow::Result<()> {
+        self.dictionary_manager.export_dictionary(&self.current_language, path)
+    }
+    
+    pub fn enable_suggestions(&mut self, enabled: bool) {
+        self.suggestions_enabled = enabled;
+    }
+    
+    pub fn set_case_sensitive(&mut self, sensitive: bool) {
+        self.case_sensitive = sensitive;
+        self.cache.clear();
+    }
+    
+    pub fn word_count(&self) -> usize {
+        match self.get_current_dictionary() {
+            Ok(dict) => dict.word_count(),
+            Err(_) => 0,
+        }
+    }
+    
+    pub fn ignored_word_count(&self) -> usize {
+        self.ignore_list.len()
+    }
+    
+    pub fn user_word_count(&self) -> usize {
+        self.user_dictionary.len()
+    }
 }
 
 fn has_repeated_characters(word: &str, max_repeats: usize) -> bool {
@@ -421,11 +597,7 @@ fn has_vowels(word: &str) -> bool {
 
 fn has_common_typo_patterns(word: &str) -> bool {
     let common_patterns = [
-        "ie", "ei", // i before e except after c
-        "tion", "sion", // Common endings
-        "able", "ible", // Common suffixes
-        "ment", "ness", // More suffixes
-        "ough", // Tricky spelling
+        "ie", "ei", "tion", "sion", "able", "ible", "ment", "ness", "ough"
     ];
     
     common_patterns.iter().any(|pattern| word.contains(pattern))

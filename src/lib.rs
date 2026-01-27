@@ -58,7 +58,7 @@ pub type Result<T> = std::result::Result<T, SpellCheckerError>;
 // Constants
 pub const APP_NAME: &str = "AtomSpell";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const APP_AUTHOR: &str = "RR-RALEFASO";
+pub const APP_AUTHOR: &str = "RR-Ralefaso";
 pub const APP_REPOSITORY: &str = "https://github.com/RR-Ralefaso/SpellChecker";
 pub const SPONSOR_URL: &str = "https://github.com/sponsors/RR-Ralefaso";
 

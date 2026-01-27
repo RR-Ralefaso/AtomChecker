@@ -1,4 +1,4 @@
-use crate::checker::{DocumentAnalysis, WordCheck};
+use crate::checker::{DocumentAnalysis, WordCheck, WordType};
 use eframe::egui;
 use std::collections::HashMap;
 
@@ -12,6 +12,10 @@ pub struct TextEditor {
     last_analysis: Option<DocumentAnalysis>,
     programming_language: Option<String>,
     syntax_highlighting: bool,
+    scroll_offset: f32,
+    selection_start: Option<usize>,
+    selection_end: Option<usize>,
+    cursor_position: usize,
 }
 
 impl Default for TextEditor {
@@ -31,18 +35,26 @@ impl TextEditor {
             last_analysis: None,
             programming_language: None,
             syntax_highlighting: true,
+            scroll_offset: 0.0,
+            selection_start: None,
+            selection_end: None,
+            cursor_position: 0,
         }
     }
     
     pub fn set_analysis(&mut self, analysis: DocumentAnalysis) {
         self.last_analysis = Some(analysis.clone());
-        
-        // Build error cache for quick lookup
         self.error_cache.clear();
+        
         for word in &analysis.words {
             if !word.is_correct {
                 self.error_cache.insert(word.start, word.clone());
             }
+        }
+        
+        // Detect programming language from file type
+        if let Some(file_type) = &analysis.file_type {
+            self.detect_programming_language(file_type);
         }
     }
     
@@ -62,6 +74,8 @@ impl TextEditor {
             Some("json") => Some("json".to_string()),
             Some("toml") => Some("toml".to_string()),
             Some("yaml") | Some("yml") => Some("yaml".to_string()),
+            Some("xml") => Some("xml".to_string()),
+            Some("sh") | Some("bash") => Some("shell".to_string()),
             _ => None,
         };
     }
@@ -74,54 +88,43 @@ impl TextEditor {
         show_line_numbers: bool,
         analysis: &Option<DocumentAnalysis>,
     ) -> egui::Response {
-        // Update analysis if provided
         if let Some(analysis) = analysis {
             self.set_analysis(analysis.clone());
         }
         
         let available_rect = ui.available_rect_before_wrap();
         
-        // Calculate line numbers width if needed
         let line_numbers_width = if show_line_numbers {
             let line_count = content.lines().count().max(1);
             let max_digits = line_count.to_string().len();
-            (max_digits as f32 * self.font_size * 0.55) + 20.0
+            (max_digits as f32 * self.font_size * 0.55) + 25.0
         } else {
             0.0
         };
         
-        // Create a custom widget for the editor
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(available_rect.width(), available_rect.height()),
             egui::Sense::click_and_drag(),
         );
         
-        // Draw the editor background
         ui.painter().rect_filled(
             rect,
             egui::Rounding::same(2.0),
             ui.visuals().window_fill,
         );
         
-        // Draw line numbers if enabled
         if show_line_numbers {
             self.draw_line_numbers(ui, rect, content);
         }
         
-        // Draw text content with error highlighting
         self.draw_text_with_errors(ui, rect, content, line_numbers_width);
         
-        // Add a text edit widget for editing
         let text_edit_rect = egui::Rect::from_min_size(
             egui::pos2(rect.left() + line_numbers_width, rect.top()),
             egui::vec2(rect.width() - line_numbers_width, rect.height()),
         );
         
         ui.allocate_ui_at_rect(text_edit_rect, |ui| {
-            // Make text edit background transparent
-            let visuals = ui.visuals().clone();
-            ui.set_visuals(visuals);
-            
             let mut text_edit = egui::TextEdit::multiline(content)
                 .desired_width(f32::INFINITY)
                 .desired_rows(10)
@@ -138,98 +141,73 @@ impl TextEditor {
                 *modified = true;
             }
             
-            // Handle right-click for suggestions
-            if edit_response.context_menu(|ui| {
-                self.show_context_menu(ui, content, &edit_response)
-            }).response.clicked_elsewhere() {
-                // Close context menu
-            }
-            
             edit_response
         }).inner
-    }
-    
-    fn show_context_menu(&self, ui: &mut egui::Ui, content: &str, response: &egui::Response) -> bool {
-        let mut handled = false;
-        
-        if let Some(cursor_pos) = response.hover_pos() {
-            // Convert cursor position to text index
-            // This is simplified - in a real implementation, you'd need to map
-            // screen coordinates to text positions
-            
-            ui.label("Spelling suggestions would appear here");
-            ui.separator();
-            
-            if ui.button("Add to dictionary").clicked() {
-                handled = true;
-            }
-            if ui.button("Ignore word").clicked() {
-                handled = true;
-            }
-        }
-        
-        handled
     }
     
     fn draw_line_numbers(&self, ui: &egui::Ui, rect: egui::Rect, content: &str) {
         let painter = ui.painter();
         let line_count = content.lines().count().max(1);
         let line_number_color = ui.visuals().weak_text_color().gamma_multiply(0.7);
+        let bg_color = ui.visuals().faint_bg_color;
+        
+        let line_num_width = self.calculate_line_numbers_width(content);
+        
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(rect.left(), rect.top()),
+                egui::pos2(rect.left() + line_num_width, rect.bottom()),
+            ),
+            0.0,
+            bg_color,
+        );
         
         for i in 0..line_count {
             let line_y = rect.top() + (i as f32 * self.line_height) + (self.line_height * 0.7);
             let line_num = (i + 1).to_string();
             
             painter.text(
-                egui::pos2(rect.left() + 8.0, line_y),
+                egui::pos2(rect.left() + line_num_width - 10.0, line_y),
                 egui::Align2::RIGHT_CENTER,
                 line_num,
                 egui::FontId::monospace(self.font_size * 0.9),
                 line_number_color,
             );
-            
-            // Draw subtle separator line
-            if i < line_count - 1 {
-                painter.line_segment(
-                    [
-                        egui::pos2(rect.left() + line_numbers_width(rect, content) - 5.0, line_y + self.line_height * 0.5),
-                        egui::pos2(rect.right(), line_y + self.line_height * 0.5),
-                    ],
-                    egui::Stroke::new(0.5, ui.visuals().window_stroke.color.gamma_multiply(0.3)),
-                );
-            }
         }
         
-        // Draw line number background
-        painter.rect_filled(
-            egui::Rect::from_min_max(
-                egui::pos2(rect.left(), rect.top()),
-                egui::pos2(rect.left() + line_numbers_width(rect, content), rect.bottom()),
-            ),
-            0.0,
-            ui.visuals().faint_bg_color,
+        painter.line_segment(
+            [
+                egui::pos2(rect.left() + line_num_width - 1.0, rect.top()),
+                egui::pos2(rect.left() + line_num_width - 1.0, rect.bottom()),
+            ],
+            egui::Stroke::new(1.0, ui.visuals().window_stroke.color.gamma_multiply(0.3)),
         );
+    }
+    
+    fn calculate_line_numbers_width(&self, content: &str) -> f32 {
+        let line_count = content.lines().count().max(1);
+        let max_digits = line_count.to_string().len();
+        (max_digits as f32 * self.font_size * 0.55) + 25.0
     }
     
     fn draw_text_with_errors(&self, ui: &egui::Ui, rect: egui::Rect, content: &str, line_numbers_width: f32) {
         let painter = ui.painter();
         let lines: Vec<&str> = content.lines().collect();
+        
         let text_color = ui.visuals().text_color();
         let error_color = ui.visuals().error_fg_color;
-        let warning_color = egui::Color32::from_rgb(255, 165, 0); // Orange for warnings
+        let warning_color = egui::Color32::from_rgb(255, 165, 0);
+        let info_color = egui::Color32::from_rgb(100, 149, 237);
         
-        // Calculate character width for positioning
         let char_width = self.font_size * 0.6;
         
         for (line_idx, line) in lines.iter().enumerate() {
             let line_y = rect.top() + (line_idx as f32 * self.line_height);
-            let text_x = rect.left() + line_numbers_width + 8.0;
+            let text_x = rect.left() + line_numbers_width + 5.0;
             
-            // Apply syntax highlighting for programming languages
             if let Some(lang) = &self.programming_language {
                 self.highlight_syntax(painter, line, text_x, line_y, lang);
             } else {
-                // Draw regular text
                 painter.text(
                     egui::pos2(text_x, line_y + (self.line_height * 0.7)),
                     egui::Align2::LEFT_CENTER,
@@ -239,7 +217,6 @@ impl TextEditor {
                 );
             }
             
-            // Draw error highlights for this line
             if let Some(analysis) = &self.last_analysis {
                 let line_num = line_idx + 1;
                 let line_errors: Vec<&WordCheck> = analysis.words
@@ -248,18 +225,23 @@ impl TextEditor {
                     .collect();
                 
                 for error in line_errors {
-                    // Calculate position of error in the line
                     let error_start_in_line = error.column.saturating_sub(1);
                     let error_x = text_x + (error_start_in_line as f32 * char_width);
                     let error_width = error.word.len() as f32 * char_width;
                     
-                    // Draw wavy underline for the error
+                    let color = match error.word_type {
+                        WordType::CodeIdentifier => info_color,
+                        WordType::ProperNoun => warning_color,
+                        WordType::Acronym => warning_color,
+                        _ => error_color,
+                    };
+                    
                     self.draw_wavy_underline(
                         painter,
                         error_x,
-                        line_y + self.line_height - 2.0,
+                        line_y + self.line_height - 3.0,
                         error_width,
-                        error_color,
+                        color,
                     );
                 }
             }
@@ -269,34 +251,63 @@ impl TextEditor {
     fn highlight_syntax(&self, painter: &egui::Painter, line: &str, x: f32, y: f32, language: &str) {
         let char_width = self.font_size * 0.6;
         let mut current_x = x;
+        let line_y = y + (self.line_height * 0.7);
         
-        // Simple keyword highlighting (can be expanded)
-        let keywords = match language {
-            "rust" => vec!["fn", "let", "mut", "pub", "use", "mod", "struct", "enum", "impl", "trait", "match", "if", "else", "for", "while", "loop", "return", "break", "continue", "self", "super", "crate"],
-            "python" => vec!["def", "class", "import", "from", "as", "if", "elif", "else", "for", "while", "try", "except", "finally", "with", "as", "pass", "return", "yield", "lambda", "True", "False", "None"],
-            "javascript" => vec!["function", "const", "let", "var", "if", "else", "for", "while", "return", "class", "import", "export", "from", "async", "await", "try", "catch", "finally", "throw"],
-            "java" => vec!["public", "private", "protected", "class", "interface", "extends", "implements", "static", "void", "int", "String", "boolean", "if", "else", "for", "while", "return", "try", "catch", "finally", "new"],
-            _ => vec![],
+        // Define keywords for different languages
+        let (keywords, types, strings, comments, numbers) = match language {
+            "rust" => (
+                vec!["fn", "let", "mut", "pub", "use", "mod", "struct", "enum", "impl", "trait", 
+                     "match", "if", "else", "for", "while", "loop", "return", "break", "continue", 
+                     "self", "super", "crate", "where", "type", "async", "await", "move", "ref", 
+                     "unsafe", "extern", "dyn", "impl", "const", "static"],
+                vec!["i32", "i64", "u32", "u64", "f32", "f64", "bool", "char", "str", "String", 
+                     "Vec", "Option", "Result", "Box", "Arc", "Rc", "RefCell", "Mutex", "HashMap"],
+                vec![],
+                vec!["//", "/*", "*/"],
+                vec![],
+            ),
+            "python" => (
+                vec!["def", "class", "import", "from", "as", "if", "elif", "else", "for", "while", 
+                     "try", "except", "finally", "with", "as", "pass", "return", "yield", "lambda", 
+                     "True", "False", "None", "and", "or", "not", "is", "in", "global", "nonlocal"],
+                vec!["int", "float", "str", "bool", "list", "dict", "tuple", "set", "NoneType"],
+                vec![],
+                vec!["#"],
+                vec![],
+            ),
+            "javascript" => (
+                vec!["function", "const", "let", "var", "if", "else", "for", "while", "return", 
+                     "class", "import", "export", "from", "async", "await", "try", "catch", 
+                     "finally", "throw", "new", "delete", "typeof", "instanceof", "in", "of"],
+                vec!["String", "Number", "Boolean", "Array", "Object", "Function", "Promise"],
+                vec![],
+                vec!["//", "/*", "*/"],
+                vec![],
+            ),
+            _ => (vec![], vec![], vec![], vec![], vec![]),
         };
         
+        // Simple word-based highlighting (for demonstration)
         let words: Vec<&str> = line.split_inclusive(|c: char| !c.is_alphanumeric() && c != '_').collect();
         
         for word in words {
             let trimmed = word.trim();
             let word_color = if keywords.contains(&trimmed) {
                 egui::Color32::from_rgb(86, 156, 214) // Blue for keywords
+            } else if types.contains(&trimmed) {
+                egui::Color32::from_rgb(78, 201, 176) // Teal for types
             } else if trimmed.starts_with('"') || trimmed.starts_with('\'') {
                 egui::Color32::from_rgb(206, 145, 120) // Orange for strings
             } else if trimmed.chars().all(|c| c.is_numeric()) {
                 egui::Color32::from_rgb(181, 206, 168) // Green for numbers
-            } else if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+            } else if comments.iter().any(|&c| trimmed.starts_with(c)) {
                 egui::Color32::from_rgb(87, 166, 74) // Green for comments
             } else {
                 ui.visuals().text_color()
             };
             
             painter.text(
-                egui::pos2(current_x, y + (self.line_height * 0.7)),
+                egui::pos2(current_x, line_y),
                 egui::Align2::LEFT_CENTER,
                 word,
                 egui::FontId::monospace(self.font_size),
@@ -332,7 +343,7 @@ impl TextEditor {
                         egui::pos2(segment_x, y + y_offset),
                         egui::pos2(segment_end_x, y + y_offset),
                     ],
-                    egui::Stroke::new(1.0, color),
+                    egui::Stroke::new(1.2, color),
                 );
             }
         }
@@ -359,10 +370,8 @@ impl TextEditor {
             None
         }
     }
-}
-
-fn line_numbers_width(rect: egui::Rect, content: &str) -> f32 {
-    let line_count = content.lines().count().max(1);
-    let max_digits = line_count.to_string().len();
-    (max_digits as f32 * 14.0 * 0.55) + 20.0
+    
+    pub fn scroll_to_line(&mut self, line: usize) {
+        self.scroll_offset = (line as f32 - 5.0).max(0.0) * self.line_height;
+    }
 }

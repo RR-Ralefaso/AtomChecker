@@ -9,6 +9,8 @@ pub enum AtomTheme {
     SolarizedLight,
     Monokai,
     Dracula,
+    GruvboxDark,
+    Nord,
 }
 
 impl AtomTheme {
@@ -20,6 +22,8 @@ impl AtomTheme {
             AtomTheme::SolarizedLight,
             AtomTheme::Monokai,
             AtomTheme::Dracula,
+            AtomTheme::GruvboxDark,
+            AtomTheme::Nord,
         ]
     }
     
@@ -31,6 +35,8 @@ impl AtomTheme {
             AtomTheme::SolarizedLight => "Solarized Light",
             AtomTheme::Monokai => "Monokai",
             AtomTheme::Dracula => "Dracula",
+            AtomTheme::GruvboxDark => "Gruvbox Dark",
+            AtomTheme::Nord => "Nord",
         }
     }
     
@@ -42,9 +48,10 @@ impl AtomTheme {
             AtomTheme::SolarizedLight => solarized_light(),
             AtomTheme::Monokai => monokai(),
             AtomTheme::Dracula => dracula(),
+            AtomTheme::GruvboxDark => gruvbox_dark(),
+            AtomTheme::Nord => nord(),
         };
         
-        // Set text color for each theme
         match self {
             AtomTheme::SolarizedDark => {
                 visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(131, 148, 150);
@@ -70,7 +77,19 @@ impl AtomTheme {
                 visuals.widgets.hovered.fg_stroke.color = egui::Color32::from_rgb(248, 248, 242);
                 visuals.widgets.active.fg_stroke.color = egui::Color32::from_rgb(139, 233, 253);
             }
-            _ => {} // Use default colors for OneDark/OneLight
+            AtomTheme::GruvboxDark => {
+                visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(235, 219, 178);
+                visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_rgb(235, 219, 178);
+                visuals.widgets.hovered.fg_stroke.color = egui::Color32::from_rgb(235, 219, 178);
+                visuals.widgets.active.fg_stroke.color = egui::Color32::from_rgb(251, 241, 199);
+            }
+            AtomTheme::Nord => {
+                visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(236, 239, 244);
+                visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_rgb(236, 239, 244);
+                visuals.widgets.hovered.fg_stroke.color = egui::Color32::from_rgb(236, 239, 244);
+                visuals.widgets.active.fg_stroke.color = egui::Color32::from_rgb(216, 222, 233);
+            }
+            _ => {}
         }
         
         ctx.set_visuals(visuals);
@@ -78,7 +97,9 @@ impl AtomTheme {
     
     pub fn is_dark(&self) -> bool {
         match self {
-            AtomTheme::OneDark | AtomTheme::SolarizedDark | AtomTheme::Monokai | AtomTheme::Dracula => true,
+            AtomTheme::OneDark | AtomTheme::SolarizedDark | 
+            AtomTheme::Monokai | AtomTheme::Dracula |
+            AtomTheme::GruvboxDark | AtomTheme::Nord => true,
             AtomTheme::OneLight | AtomTheme::SolarizedLight => false,
         }
     }
@@ -86,37 +107,34 @@ impl AtomTheme {
 
 fn solarized_dark() -> egui::Visuals {
     let mut visuals = egui::Visuals::dark();
-    // Solarized dark theme colors
-    visuals.window_fill = egui::Color32::from_rgb(0, 43, 54);     // base03
-    visuals.panel_fill = egui::Color32::from_rgb(7, 54, 66);      // base02
-    visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(88, 110, 117)); // base01
-    visuals.faint_bg_color = egui::Color32::from_rgb(88, 110, 117); // base01
-    visuals.extreme_bg_color = egui::Color32::from_rgb(0, 43, 54);  // base03
-    visuals.code_bg_color = egui::Color32::from_rgb(7, 54, 66);     // base02
-    visuals.warn_fg_color = egui::Color32::from_rgb(181, 137, 0);   // yellow
-    visuals.error_fg_color = egui::Color32::from_rgb(220, 50, 47);  // red
-    visuals.hyperlink_color = egui::Color32::from_rgb(38, 139, 210); // blue
+    visuals.window_fill = egui::Color32::from_rgb(0, 43, 54);
+    visuals.panel_fill = egui::Color32::from_rgb(7, 54, 66);
+    visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(88, 110, 117));
+    visuals.faint_bg_color = egui::Color32::from_rgb(88, 110, 117);
+    visuals.extreme_bg_color = egui::Color32::from_rgb(0, 43, 54);
+    visuals.code_bg_color = egui::Color32::from_rgb(7, 54, 66);
+    visuals.warn_fg_color = egui::Color32::from_rgb(181, 137, 0);
+    visuals.error_fg_color = egui::Color32::from_rgb(220, 50, 47);
+    visuals.hyperlink_color = egui::Color32::from_rgb(38, 139, 210);
     visuals
 }
 
 fn solarized_light() -> egui::Visuals {
     let mut visuals = egui::Visuals::light();
-    // Solarized light theme colors
-    visuals.window_fill = egui::Color32::from_rgb(253, 246, 227);  // base3
-    visuals.panel_fill = egui::Color32::from_rgb(238, 232, 213);   // base2
-    visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(147, 161, 161)); // base1
-    visuals.faint_bg_color = egui::Color32::from_rgb(147, 161, 161); // base1
-    visuals.extreme_bg_color = egui::Color32::from_rgb(253, 246, 227); // base3
-    visuals.code_bg_color = egui::Color32::from_rgb(238, 232, 213);  // base2
-    visuals.warn_fg_color = egui::Color32::from_rgb(181, 137, 0);    // yellow
-    visuals.error_fg_color = egui::Color32::from_rgb(220, 50, 47);   // red
-    visuals.hyperlink_color = egui::Color32::from_rgb(38, 139, 210); // blue
+    visuals.window_fill = egui::Color32::from_rgb(253, 246, 227);
+    visuals.panel_fill = egui::Color32::from_rgb(238, 232, 213);
+    visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(147, 161, 161));
+    visuals.faint_bg_color = egui::Color32::from_rgb(147, 161, 161);
+    visuals.extreme_bg_color = egui::Color32::from_rgb(253, 246, 227);
+    visuals.code_bg_color = egui::Color32::from_rgb(238, 232, 213);
+    visuals.warn_fg_color = egui::Color32::from_rgb(181, 137, 0);
+    visuals.error_fg_color = egui::Color32::from_rgb(220, 50, 47);
+    visuals.hyperlink_color = egui::Color32::from_rgb(38, 139, 210);
     visuals
 }
 
 fn monokai() -> egui::Visuals {
     let mut visuals = egui::Visuals::dark();
-    // Monokai theme colors
     visuals.window_fill = egui::Color32::from_rgb(39, 40, 34);
     visuals.panel_fill = egui::Color32::from_rgb(39, 40, 34);
     visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(73, 72, 62));
@@ -131,7 +149,6 @@ fn monokai() -> egui::Visuals {
 
 fn dracula() -> egui::Visuals {
     let mut visuals = egui::Visuals::dark();
-    // Dracula theme colors
     visuals.window_fill = egui::Color32::from_rgb(40, 42, 54);
     visuals.panel_fill = egui::Color32::from_rgb(40, 42, 54);
     visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(68, 71, 90));
@@ -141,5 +158,33 @@ fn dracula() -> egui::Visuals {
     visuals.warn_fg_color = egui::Color32::from_rgb(241, 250, 140);
     visuals.error_fg_color = egui::Color32::from_rgb(255, 85, 85);
     visuals.hyperlink_color = egui::Color32::from_rgb(139, 233, 253);
+    visuals
+}
+
+fn gruvbox_dark() -> egui::Visuals {
+    let mut visuals = egui::Visuals::dark();
+    visuals.window_fill = egui::Color32::from_rgb(40, 40, 40);
+    visuals.panel_fill = egui::Color32::from_rgb(60, 56, 54);
+    visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(124, 111, 100));
+    visuals.faint_bg_color = egui::Color32::from_rgb(124, 111, 100);
+    visuals.extreme_bg_color = egui::Color32::from_rgb(40, 40, 40);
+    visuals.code_bg_color = egui::Color32::from_rgb(60, 56, 54);
+    visuals.warn_fg_color = egui::Color32::from_rgb(215, 153, 33);
+    visuals.error_fg_color = egui::Color32::from_rgb(204, 36, 29);
+    visuals.hyperlink_color = egui::Color32::from_rgb(69, 133, 136);
+    visuals
+}
+
+fn nord() -> egui::Visuals {
+    let mut visuals = egui::Visuals::dark();
+    visuals.window_fill = egui::Color32::from_rgb(46, 52, 64);
+    visuals.panel_fill = egui::Color32::from_rgb(59, 66, 82);
+    visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(76, 86, 106));
+    visuals.faint_bg_color = egui::Color32::from_rgb(76, 86, 106);
+    visuals.extreme_bg_color = egui::Color32::from_rgb(46, 52, 64);
+    visuals.code_bg_color = egui::Color32::from_rgb(59, 66, 82);
+    visuals.warn_fg_color = egui::Color32::from_rgb(235, 203, 139);
+    visuals.error_fg_color = egui::Color32::from_rgb(191, 97, 106);
+    visuals.hyperlink_color = egui::Color32::from_rgb(136, 192, 208);
     visuals
 }

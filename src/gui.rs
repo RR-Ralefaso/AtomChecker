@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-// App state that will be saved/loaded
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct AppState {
@@ -29,10 +28,10 @@ pub struct AppState {
     pub show_whitespace: bool,
     pub last_directory: Option<PathBuf>,
     pub sidebar_state: Sidebar,
-    #[serde(skip)]
     pub show_about: bool,
-    #[serde(skip)]
-    pub show_dictionary_manager: bool,
+    pub show_settings: bool,
+    pub enable_syntax_highlighting: bool,
+    pub check_interval_ms: u64,
 }
 
 impl Default for AppState {
@@ -54,7 +53,9 @@ impl Default for AppState {
             last_directory: None,
             sidebar_state: Sidebar::new(),
             show_about: false,
-            show_dictionary_manager: false,
+            show_settings: false,
+            enable_syntax_highlighting: true,
+            check_interval_ms: 1500,
         }
     }
 }
@@ -77,6 +78,8 @@ pub struct SpellCheckerApp {
     pending_export_dict: bool,
     pending_clear_ignored: bool,
     last_spell_check: Option<DocumentAnalysis>,
+    show_notification: Option<(String, egui::Color32)>,
+    notification_timer: Instant,
 }
 
 #[derive(Default)]
@@ -86,26 +89,24 @@ struct CheckStats {
     last_check_duration: std::time::Duration,
     detected_language: Option<Language>,
     check_count: usize,
+    total_characters: usize,
+    total_lines: usize,
 }
 
 impl SpellCheckerApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Try to load saved state
         let state: AppState = cc.storage
             .and_then(|storage| eframe::get_value(storage, eframe::APP_KEY))
             .unwrap_or_default();
         
-        // Apply theme from saved state
         state.theme.apply(&cc.egui_ctx);
         
         let language_manager = LanguageManager::new();
         
-        // Create spell checker with saved language
         let spell_checker = match SpellChecker::new(state.selected_language) {
             Ok(checker) => Arc::new(std::sync::Mutex::new(checker)),
             Err(e) => {
                 eprintln!("Failed to create spell checker: {}", e);
-                // Fallback to English
                 Arc::new(std::sync::Mutex::new(
                     SpellChecker::new(Language::English).unwrap()
                 ))
@@ -122,7 +123,7 @@ impl SpellCheckerApp {
             text_editor,
             spell_checker,
             last_check_time: Instant::now(),
-            check_interval: std::time::Duration::from_millis(1500),
+            check_interval: std::time::Duration::from_millis(state.check_interval_ms),
             is_dragging_file: false,
             drop_highlight: false,
             stats: CheckStats::default(),
@@ -135,17 +136,18 @@ impl SpellCheckerApp {
             pending_export_dict: false,
             pending_clear_ignored: false,
             last_spell_check: None,
+            show_notification: None,
+            notification_timer: Instant::now(),
         }
     }
     
     fn check_spelling(&mut self) {
-        if !self.state.auto_check || self.state.document_content.is_empty() {
+        if !self.state.auto_check || self.state.document_content.trim().is_empty() {
             return;
         }
         
         let start_time = Instant::now();
         
-        // Detect language if auto-detect is enabled
         let language_to_use = if self.state.auto_detect_language {
             let detected = self.language_manager.detect_language(&self.state.document_content);
             self.stats.detected_language = Some(detected);
@@ -154,7 +156,6 @@ impl SpellCheckerApp {
             self.state.selected_language
         };
         
-        // Update spell checker language if changed
         if language_to_use != self.spell_checker.lock().unwrap().current_language() {
             if let Ok(mut checker) = self.spell_checker.lock() {
                 if checker.set_language(language_to_use).is_ok() {
@@ -163,10 +164,14 @@ impl SpellCheckerApp {
             }
         }
         
-        // Perform spell check
+        let filename = self.state.current_file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str());
+        
         let analysis = {
             let checker = self.spell_checker.lock().unwrap();
-            checker.check_document(&self.state.document_content)
+            checker.check_document(&self.state.document_content, filename)
         };
         
         self.analysis = Some(analysis.clone());
@@ -174,8 +179,9 @@ impl SpellCheckerApp {
         self.stats.errors = analysis.misspelled_words;
         self.stats.last_check_duration = start_time.elapsed();
         self.stats.check_count += 1;
+        self.stats.total_characters = self.state.document_content.chars().count();
+        self.stats.total_lines = self.state.document_content.lines().count();
         
-        // Update text editor with analysis for highlighting
         self.text_editor.set_analysis(analysis.clone());
         self.last_spell_check = Some(analysis);
         self.last_check_time = Instant::now();
@@ -187,12 +193,10 @@ impl SpellCheckerApp {
         self.state.document_content = content;
         self.state.is_document_modified = false;
         
-        // Update last directory
         if let Some(parent) = path.parent() {
             self.state.last_directory = Some(parent.to_path_buf());
         }
         
-        // Add to recent files (avoid duplicates)
         if !self.state.recent_files.contains(&path) {
             self.state.recent_files.insert(0, path);
             if self.state.recent_files.len() > 10 {
@@ -200,7 +204,6 @@ impl SpellCheckerApp {
             }
         }
         
-        // Auto-detect language from file content
         if self.state.auto_detect_language {
             let detected = self.language_manager.detect_language(&self.state.document_content);
             self.state.selected_language = detected;
@@ -209,7 +212,6 @@ impl SpellCheckerApp {
             }
         }
         
-        // Trigger spell check
         self.check_spelling();
         
         Ok(())
@@ -219,6 +221,9 @@ impl SpellCheckerApp {
         if let Some(path) = &self.state.current_file {
             std::fs::write(path, &self.state.document_content)?;
             self.state.is_document_modified = false;
+            self.show_notification("File saved successfully".to_string(), egui::Color32::GREEN);
+        } else {
+            self.save_as()?;
         }
         Ok(())
     }
@@ -240,8 +245,14 @@ impl SpellCheckerApp {
             std::fs::write(&path, &self.state.document_content)?;
             self.state.current_file = Some(path);
             self.state.is_document_modified = false;
+            self.show_notification("File saved successfully".to_string(), egui::Color32::GREEN);
         }
         Ok(())
+    }
+    
+    fn show_notification(&mut self, message: String, color: egui::Color32) {
+        self.show_notification = Some((message, color));
+        self.notification_timer = Instant::now();
     }
     
     fn handle_file_drop(&mut self, ctx: &egui::Context) {
@@ -254,7 +265,7 @@ impl SpellCheckerApp {
         if ctx.input(|i| i.raw.dropped_files.len() > 0) {
             if let Some(file) = ctx.input(|i| i.raw.dropped_files[0].path.clone()) {
                 if let Err(e) = self.open_file(file) {
-                    eprintln!("Failed to open dropped file: {}", e);
+                    self.show_notification(format!("Failed to open file: {}", e), egui::Color32::RED);
                 }
             }
             self.drop_highlight = false;
@@ -268,38 +279,35 @@ impl SpellCheckerApp {
     }
     
     fn handle_pending_actions(&mut self) {
-        // Handle adding words to dictionary
         if let Some(word) = self.pending_add_word.take() {
             {
                 let mut checker = self.spell_checker.lock().unwrap();
                 if checker.add_word_to_dictionary(&word).is_ok() {
-                    println!("Added word to dictionary: {}", word);
+                    self.show_notification(format!("Added '{}' to dictionary", word), egui::Color32::GREEN);
                 }
             }
-            self.check_spelling(); // Re-check with updated dictionary
+            self.check_spelling();
         }
         
-        // Handle ignoring words
         if let Some(word) = self.pending_ignore_word.take() {
             {
                 let mut checker = self.spell_checker.lock().unwrap();
                 if checker.ignore_word(&word).is_ok() {
-                    println!("Ignored word: {}", word);
+                    self.show_notification(format!("Ignored '{}' for this session", word), egui::Color32::YELLOW);
                 }
             }
-            self.check_spelling(); // Re-check with updated ignore list
+            self.check_spelling();
         }
         
-        // Handle word replacement
         if let Some((find, replace)) = self.pending_replace.take() {
             if !find.is_empty() {
                 self.state.document_content = self.state.document_content.replace(&find, &replace);
                 self.state.is_document_modified = true;
                 self.check_spelling();
+                self.show_notification(format!("Replaced '{}' with '{}'", find, replace), egui::Color32::GREEN);
             }
         }
         
-        // Handle dictionary import
         if self.pending_import_dict {
             self.pending_import_dict = false;
             if let Some(path) = FileDialog::new()
@@ -310,16 +318,15 @@ impl SpellCheckerApp {
                 {
                     let mut checker = self.spell_checker.lock().unwrap();
                     if let Err(e) = checker.import_dictionary(&path) {
-                        eprintln!("Failed to import dictionary: {}", e);
+                        self.show_notification(format!("Failed to import: {}", e), egui::Color32::RED);
                     } else {
-                        println!("Imported dictionary from: {:?}", path);
+                        self.show_notification("Dictionary imported successfully".to_string(), egui::Color32::GREEN);
                     }
                 }
                 self.check_spelling();
             }
         }
         
-        // Handle dictionary export
         if self.pending_export_dict {
             self.pending_export_dict = false;
             let default_name = format!("dictionary_{}.txt", self.state.selected_language.code());
@@ -332,15 +339,14 @@ impl SpellCheckerApp {
                 {
                     let checker = self.spell_checker.lock().unwrap();
                     if let Err(e) = checker.export_dictionary(&path) {
-                        eprintln!("Failed to export dictionary: {}", e);
+                        self.show_notification(format!("Failed to export: {}", e), egui::Color32::RED);
                     } else {
-                        println!("Exported dictionary to: {:?}", path);
+                        self.show_notification("Dictionary exported successfully".to_string(), egui::Color32::GREEN);
                     }
                 }
             }
         }
         
-        // Handle clear ignored words
         if self.pending_clear_ignored {
             self.pending_clear_ignored = false;
             {
@@ -348,6 +354,7 @@ impl SpellCheckerApp {
                 checker.clear_ignored_words();
             }
             self.check_spelling();
+            self.show_notification("Cleared ignored words".to_string(), egui::Color32::GREEN);
         }
     }
     
@@ -361,7 +368,7 @@ impl SpellCheckerApp {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.heading("AtomSpell Spell Checker");
+                    ui.heading("🔤 AtomSpell Spell Checker");
                     ui.label("An Atom IDE-inspired multilingual spell checker");
                     ui.separator();
                     
@@ -374,7 +381,6 @@ impl SpellCheckerApp {
                     ui.label("License: MIT");
                     ui.separator();
                     
-                    // Sponsor button
                     ui.horizontal(|ui| {
                         ui.label("❤️ Support this project:");
                         if ui.button("Become a Sponsor").clicked() {
@@ -397,6 +403,82 @@ impl SpellCheckerApp {
         self.state.show_about = show_about;
     }
     
+    fn show_settings_dialog(&mut self, ctx: &egui::Context) {
+        let mut show_settings = self.state.show_settings;
+        
+        egui::Window::new("Settings")
+            .open(&mut show_settings)
+            .resizable(true)
+            .default_width(500.0)
+            .show(ctx, |ui| {
+                ui.heading("Application Settings");
+                ui.separator();
+                
+                egui::Grid::new("settings_grid")
+                    .num_columns(2)
+                    .spacing([20.0, 10.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Auto-check:");
+                        ui.checkbox(&mut self.state.auto_check, "");
+                        ui.end_row();
+                        
+                        ui.label("Check interval (ms):");
+                        ui.add(egui::DragValue::new(&mut self.state.check_interval_ms)
+                            .clamp_range(500..=10000)
+                            .suffix("ms"));
+                        ui.end_row();
+                        
+                        ui.label("Auto-detect language:");
+                        ui.checkbox(&mut self.state.auto_detect_language, "");
+                        ui.end_row();
+                        
+                        ui.label("Show line numbers:");
+                        ui.checkbox(&mut self.state.show_line_numbers, "");
+                        ui.end_row();
+                        
+                        ui.label("Wrap text:");
+                        ui.checkbox(&mut self.state.wrap_text, "");
+                        ui.end_row();
+                        
+                        ui.label("Show whitespace:");
+                        ui.checkbox(&mut self.state.show_whitespace, "");
+                        ui.end_row();
+                        
+                        ui.label("Syntax highlighting:");
+                        ui.checkbox(&mut self.state.enable_syntax_highlighting, "");
+                        ui.end_row();
+                        
+                        ui.label("Font size:");
+                        ui.add(egui::DragValue::new(&mut self.state.font_size)
+                            .clamp_range(8.0..=36.0)
+                            .speed(0.5));
+                        ui.end_row();
+                    });
+                
+                ui.separator();
+                
+                ui.horizontal(|ui| {
+                    if ui.button("Reset to Defaults").clicked() {
+                        *self = Self::new(&eframe::CreationContext::default());
+                    }
+                    
+                    if ui.button("Save").clicked() {
+                        self.state.show_settings = false;
+                        self.text_editor.set_font_size(self.state.font_size);
+                        self.text_editor.set_wrap_lines(self.state.wrap_text);
+                        self.check_interval = std::time::Duration::from_millis(self.state.check_interval_ms);
+                    }
+                    
+                    if ui.button("Cancel").clicked() {
+                        self.state.show_settings = false;
+                    }
+                });
+            });
+            
+        self.state.show_settings = show_settings;
+    }
+    
     fn show_menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -407,7 +489,7 @@ impl SpellCheckerApp {
                         .pick_file()
                     {
                         if let Err(e) = self.open_file(path) {
-                            eprintln!("Failed to open file: {}", e);
+                            self.show_notification(format!("Failed to open file: {}", e), egui::Color32::RED);
                         }
                     }
                     ui.close_menu();
@@ -417,31 +499,29 @@ impl SpellCheckerApp {
                 
                 if ui.button("💾 Save").clicked() {
                     if let Err(e) = self.save_file() {
-                        eprintln!("Failed to save file: {}", e);
+                        self.show_notification(format!("Failed to save: {}", e), egui::Color32::RED);
                     }
                     ui.close_menu();
                 }
                 
                 if ui.button("💾 Save As...").clicked() {
                     if let Err(e) = self.save_as() {
-                        eprintln!("Failed to save file: {}", e);
+                        self.show_notification(format!("Failed to save: {}", e), egui::Color32::RED);
                     }
                     ui.close_menu();
                 }
                 
                 ui.separator();
                 
-                // Recent files
                 if !self.state.recent_files.is_empty() {
                     ui.menu_button("Recent Files", |ui| {
-                        // Make a copy to avoid borrowing issues
                         let recent_files = self.state.recent_files.clone();
                         for path in &recent_files {
                             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
                                 if ui.button(format!("📄 {}", filename)).clicked() {
                                     let path_clone = path.clone();
                                     if let Err(e) = self.open_file(path_clone) {
-                                        eprintln!("Failed to open file: {}", e);
+                                        self.show_notification(format!("Failed to open: {}", e), egui::Color32::RED);
                                     }
                                     ui.close_menu();
                                 }
@@ -552,7 +632,14 @@ impl SpellCheckerApp {
             });
             
             ui.menu_button("Tools", |ui| {
-                if ui.button("⚙️ Import Dictionary...").clicked() {
+                if ui.button("⚙️ Settings").clicked() {
+                    self.state.show_settings = true;
+                    ui.close_menu();
+                }
+                
+                ui.separator();
+                
+                if ui.button("📥 Import Dictionary...").clicked() {
                     self.pending_import_dict = true;
                     ui.close_menu();
                 }
@@ -589,7 +676,6 @@ impl SpellCheckerApp {
                 }
             });
             
-            // Status indicators on right side
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.show_language_selection(ui);
                 
@@ -641,65 +727,101 @@ impl SpellCheckerApp {
     }
     
     fn show_status_bar(&mut self, ui: &mut egui::Ui) {
-        egui::menu::bar(ui, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(path) = &self.state.current_file {
-                    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("Untitled");
-                    ui.label(format!("📄 {}", filename));
-                } else {
-                    ui.label("📄 Untitled");
-                }
-                
-                if self.state.is_document_modified {
-                    ui.colored_label(egui::Color32::YELLOW, "(modified)");
-                }
-            });
-            
-            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+        egui::TopBottomPanel::bottom("status_bar")
+            .exact_height(24.0)
+            .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(format!("Words: {}", self.stats.total_words));
-                    
-                    if self.stats.errors > 0 {
-                        ui.colored_label(
-                            egui::Color32::RED,
-                            format!("Errors: {}", self.stats.errors),
-                        );
-                    } else if self.stats.total_words > 0 {
-                        ui.colored_label(
-                            egui::Color32::GREEN,
-                            "✓ No errors",
-                        );
+                    if let Some(path) = &self.state.current_file {
+                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("Untitled");
+                        ui.label(format!("📄 {}", filename));
+                    } else {
+                        ui.label("📄 Untitled");
                     }
                     
-                    if self.stats.last_check_duration.as_millis() > 0 {
-                        ui.label(format!("({}ms)", self.stats.last_check_duration.as_millis()));
+                    if self.state.is_document_modified {
+                        ui.colored_label(egui::Color32::YELLOW, "(modified)");
+                    }
+                });
+                
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("📝 Words: {}", self.stats.total_words));
+                        ui.label(format!("📊 Lines: {}", self.stats.total_lines));
+                        ui.label(format!("🔤 Chars: {}", self.stats.total_characters));
+                        
+                        if self.stats.errors > 0 {
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                format!("❌ Errors: {}", self.stats.errors),
+                            );
+                        } else if self.stats.total_words > 0 {
+                            ui.colored_label(
+                                egui::Color32::GREEN,
+                                "✅ No errors",
+                            );
+                        }
+                        
+                        if self.stats.last_check_duration.as_millis() > 0 {
+                            ui.label(format!("⚡ {}ms", self.stats.last_check_duration.as_millis()));
+                        }
+                    });
+                });
+                
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.state.auto_check {
+                        ui.colored_label(egui::Color32::GREEN, "🔄 Auto");
+                    }
+                    
+                    let word_count = {
+                        let checker = self.spell_checker.lock().unwrap();
+                        checker.word_count()
+                    };
+                    ui.label(format!("📚 Dict: {}", word_count));
+                    
+                    if self.state.auto_detect_language {
+                        if let Some(detected) = self.stats.detected_language {
+                            if detected != self.state.selected_language {
+                                ui.colored_label(
+                                    egui::Color32::LIGHT_BLUE,
+                                    format!("🌐 ({})", detected.name()),
+                                );
+                            }
+                        }
                     }
                 });
             });
-            
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.state.auto_check {
-                    ui.colored_label(egui::Color32::GREEN, "🔄 Auto");
-                }
+    }
+    
+    fn show_notification_overlay(&self, ui: &mut egui::Ui) {
+        if let Some((message, color)) = &self.show_notification {
+            if self.notification_timer.elapsed() < std::time::Duration::from_secs(3) {
+                let rect = ui.max_rect();
+                let notification_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.center().x, rect.top() + 50.0),
+                    egui::vec2(300.0, 40.0),
+                );
                 
-                let word_count = {
-                    let checker = self.spell_checker.lock().unwrap();
-                    checker.word_count()
-                };
-                ui.label(format!("Dict: {}", word_count));
+                ui.painter().rect_filled(
+                    notification_rect,
+                    10.0,
+                    ui.visuals().panel_fill,
+                );
                 
-                if self.state.auto_detect_language {
-                    if let Some(detected) = self.stats.detected_language {
-                        if detected != self.state.selected_language {
-                            ui.colored_label(
-                                egui::Color32::LIGHT_BLUE,
-                                format!("({})", detected.name()),
-                            );
-                        }
-                    }
-                }
-            });
-        });
+                ui.painter().rect_stroke(
+                    notification_rect,
+                    10.0,
+                    egui::Stroke::new(1.0, *color),
+                );
+                
+                ui.painter().text(
+                    notification_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    message,
+                    egui::FontId::proportional(14.0),
+                    *color,
+                );
+            }
+        }
     }
     
     fn show_main_content(&mut self, ui: &mut egui::Ui) {
@@ -726,7 +848,6 @@ impl SpellCheckerApp {
         }
         
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            // Drop zone highlight
             if self.drop_highlight {
                 let rect = ui.available_rect_before_wrap();
                 ui.painter().rect_filled(
@@ -741,7 +862,6 @@ impl SpellCheckerApp {
                 });
             }
             
-            // Text editor
             let editor_response = self.text_editor.show(
                 ui,
                 &mut self.state.document_content,
@@ -750,56 +870,47 @@ impl SpellCheckerApp {
                 &self.analysis,
             );
             
-            // Check spelling if content changed and auto-check is enabled
             if editor_response.changed && self.state.auto_check {
                 self.check_spelling();
             }
+            
+            self.show_notification_overlay(ui);
         });
     }
 }
 
 impl eframe::App for SpellCheckerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Handle pending actions first
         self.handle_pending_actions();
-        
-        // Handle file drop
         self.handle_file_drop(ctx);
-        
-        // Apply theme
         self.state.theme.apply(ctx);
         
-        // Show about dialog if needed
         if self.state.show_about {
             self.show_about_dialog(ctx);
         }
         
-        // Top menu bar
+        if self.state.show_settings {
+            self.show_settings_dialog(ctx);
+        }
+        
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             self.show_menu_bar(ui);
         });
         
-        // Status bar
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            self.show_status_bar(ui);
-        });
+        self.show_status_bar(ctx);
         
-        // Main content area
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_main_content(ui);
         });
         
-        // Check for auto-check interval
         if self.state.auto_check && self.last_check_time.elapsed() > self.check_interval {
             self.check_spelling();
         }
         
-        // Request repaint if needed
         ctx.request_repaint();
     }
     
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        // Save application state
         eframe::set_value(storage, eframe::APP_KEY, &self.state);
     }
     

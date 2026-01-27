@@ -23,6 +23,27 @@ static CODE_IGNORE_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"^[A-Z_][A-Z0-9_]*$|^[a-z_][a-z0-9_]*$|^\d+|^0x[0-9a-fA-F]+$|^\.\w+").unwrap()
 });
 
+// Common programming keywords to ignore
+static CODE_KEYWORDS: Lazy<Vec<&'static str>> = Lazy::new(|| {
+    vec![
+        "var", "val", "fn", "def", "func", "cls", "obj", "arr", "vec", "str",
+        "int", "num", "bool", "float", "double", "char", "byte", "ptr", "ref",
+        "mut", "const", "static", "pub", "priv", "prot", "async", "await",
+        "try", "catch", "throw", "null", "nil", "none", "some", "ok", "err",
+        "true", "false", "self", "this", "super", "new", "del", "inc", "dec",
+        "let", "if", "else", "for", "while", "loop", "match", "case", "return",
+        "break", "continue", "import", "export", "from", "as", "use", "mod",
+        "struct", "enum", "impl", "trait", "where", "type", "interface", "class",
+        "function", "const", "let", "var", "public", "private", "protected",
+        "extends", "implements", "throws", "try", "catch", "finally", "throw",
+        "new", "delete", "sizeof", "typedef", "namespace", "using", "template",
+        "virtual", "override", "abstract", "sealed", "internal", "extern", "inline",
+        "volatile", "register", "restrict", "atomic", "alignas", "alignof", "decltype",
+        "noexcept", "static_assert", "thread_local", "concept", "requires", "co_await",
+        "co_return", "co_yield", "module", "import", "export", "consteval", "constinit",
+    ]
+});
+
 /// Extract words from text based on language and context
 pub fn extract_words(text: &str, is_cjk: bool, is_code: bool) -> Vec<String> {
     if is_cjk {
@@ -38,6 +59,7 @@ pub fn extract_words(text: &str, is_cjk: bool, is_code: bool) -> Vec<String> {
             .filter(|word| {
                 // Filter out common programming constructs
                 !CODE_IGNORE_REGEX.is_match(word) &&
+                !is_code_keyword(word) &&
                 word.len() > 2 && // Ignore very short words
                 !is_likely_code_symbol(word) &&
                 !is_common_code_pattern(word)
@@ -52,17 +74,29 @@ pub fn extract_words(text: &str, is_cjk: bool, is_code: bool) -> Vec<String> {
     }
 }
 
+fn is_code_keyword(word: &str) -> bool {
+    CODE_KEYWORDS.contains(&word.to_lowercase().as_str())
+}
+
 fn is_likely_code_symbol(word: &str) -> bool {
     // Words that are likely code symbols or short forms
     let code_symbols = [
-        "var", "val", "fn", "def", "func", "cls", "obj", "arr", "vec", "str",
-        "int", "num", "bool", "float", "double", "char", "byte", "ptr", "ref",
-        "mut", "const", "static", "pub", "priv", "prot", "async", "await",
-        "try", "catch", "throw", "null", "nil", "none", "some", "ok", "err",
-        "true", "false", "self", "this", "super", "new", "del", "inc", "dec"
+        "arg", "args", "argv", "env", "envp", "ctx", "cfg", "config",
+        "db", "dao", "dto", "vo", "bo", "po", "vo", "dto", "entity",
+        "repo", "svc", "service", "ctrl", "controller", "hdl", "handler",
+        "util", "utils", "helper", "helpers", "const", "consts", "def", "defs",
+        "err", "error", "errors", "msg", "message", "messages", "val", "value",
+        "values", "res", "result", "results", "opt", "option", "options",
+        "buf", "buffer", "buffers", "mem", "memory", "ptr", "pointer", "ref",
+        "reference", "tmp", "temp", "tempory", "info", "information", "stat",
+        "status", "state", "states", "cfg", "config", "configuration",
+        "init", "initialize", "cleanup", "destroy", "create", "delete",
+        "update", "insert", "remove", "add", "get", "set", "is", "has",
+        "can", "should", "will", "do", "make", "build", "run", "start",
+        "stop", "pause", "resume", "load", "save", "read", "write",
     ];
     
-    code_symbols.contains(&word)
+    code_symbols.contains(&word.to_lowercase().as_str())
 }
 
 fn is_common_code_pattern(word: &str) -> bool {
@@ -171,6 +205,13 @@ pub fn is_likely_code(text: &str) -> bool {
            trimmed.contains("var ") || trimmed.contains("return ") {
             code_indicators += 1;
         }
+        
+        // Check for common code patterns
+        if trimmed.contains("=") && !trimmed.contains("==") ||
+           trimmed.contains("(") && trimmed.contains(")") ||
+           trimmed.contains("[") && trimmed.contains("]") {
+            code_indicators += 1;
+        }
     }
     
     code_indicators >= 2
@@ -180,7 +221,7 @@ pub fn is_likely_code(text: &str) -> bool {
 pub fn is_code_file(filename: &str) -> bool {
     if let Some(ext) = filename.rsplit('.').next() {
         matches!(ext.to_lowercase().as_str(),
-            "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "java" | "cpp" | "c" | "cc" |
+            "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "java" | "cpp" | "c" | "cc" | "cxx" |
             "go" | "rb" | "php" | "cs" | "swift" | "kt" | "scala" | "hs" | "lua" |
             "pl" | "r" | "m" | "f" | "f90" | "f95" | "f03" | "f08" | "v" | "sv" |
             "vhd" | "vhdl" | "asm" | "s" | "asm" | "sh" | "bash" | "zsh" | "fish" |
@@ -190,4 +231,64 @@ pub fn is_code_file(filename: &str) -> bool {
     } else {
         false
     }
+}
+
+/// Calculate word similarity using Levenshtein distance
+pub fn levenshtein_distance(a: &str, b: &str) -> usize {
+    if a == b { return 0; }
+    
+    let a_len = a.chars().count();
+    let b_len = b.chars().count();
+    
+    if a_len == 0 { return b_len; }
+    if b_len == 0 { return a_len; }
+    
+    let mut prev_row: Vec<usize> = (0..=b_len).collect();
+    let mut curr_row = vec![0; b_len + 1];
+    
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    
+    for i in 1..=a_len {
+        curr_row[0] = i;
+        
+        for j in 1..=b_len {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            curr_row[j] = std::cmp::min(
+                std::cmp::min(prev_row[j] + 1, curr_row[j - 1] + 1),
+                prev_row[j - 1] + cost
+            );
+        }
+        
+        std::mem::swap(&mut prev_row, &mut curr_row);
+    }
+    
+    prev_row[b_len]
+}
+
+/// Get suggestions for a misspelled word
+pub fn get_suggestions(word: &str, dictionary_words: &std::collections::HashSet<String>) -> Vec<String> {
+    if word.len() <= 1 {
+        return Vec::new();
+    }
+    
+    let mut suggestions: Vec<(String, usize)> = dictionary_words
+        .iter()
+        .filter(|dict_word| {
+            // Quick filter: similar length
+            let len_diff = (dict_word.len() as isize - word.len() as isize).abs();
+            len_diff <= 3
+        })
+        .map(|dict_word| {
+            let distance = levenshtein_distance(word, dict_word);
+            (dict_word.clone(), distance)
+        })
+        .filter(|(_, distance)| *distance <= 2)
+        .collect();
+    
+    suggestions.sort_by_key(|(_, distance)| *distance);
+    suggestions.into_iter()
+        .take(5)
+        .map(|(word, _)| word)
+        .collect()
 }
