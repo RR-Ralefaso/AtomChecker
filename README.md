@@ -43,3 +43,16 @@ A modern, multilingual spell checker with a beautiful Atom IDE-inspired interfac
 ```bash
 git clone https://github.com/RR-Ralefaso/SpellChecker.git
 cd SpellChecker
+
+building windows
+=================
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu
+//should find it in .target/release/x86_64-pc-windows-gnu
+
+making linux portable version
+=============================
+mkdir -p ~/Desktop/SpellCheckerPortable
+cp ./target/release/spellchecker ~/Desktop/SpellCheckerPortable/
+cp -r assets/ ~/Desktop/SpellCheckerPortable/
+cp -r src/dictionary/ ~/Desktop/SpellCheckerPortable/spellchecker.exe
