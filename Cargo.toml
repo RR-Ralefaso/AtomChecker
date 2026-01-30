@@ -13,7 +13,7 @@ categories = ["text-editors", "text-processing"]
 [features]
 default = ["gui"]
 cli = ["clap", "colored", "indicatif"]
-gui = ["eframe", "egui", "rfd", "egui_extras"]
+gui = ["eframe", "egui", "rfd", "egui_extras", "image", "icon_loading"]
 
 [[bin]]
 name = "spellchecker"
@@ -34,6 +34,8 @@ eframe = { version = "0.27", features = ["persistence"], optional = true }
 egui = { version = "0.27", optional = true }
 rfd = { version = "0.14", optional = true }
 egui_extras = { version = "0.27", optional = true }
+image = { version = "0.25", optional = true }
+icon_loading = { version = "0.2", optional = true }
 
 # Core functionality
 rayon = "1.8.0"
@@ -41,6 +43,7 @@ regex = "1.10.2"
 walkdir = "2.5.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+csv = "1.3"
 anyhow = "1.0"
 thiserror = "1.0"
 lru = "0.12.3"

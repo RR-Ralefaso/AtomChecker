@@ -12,6 +12,7 @@ pub struct TextEditor {
     last_analysis: Option<DocumentAnalysis>,
     programming_language: Option<String>,
     scroll_offset: f32,
+    font_loaded: bool,
 }
 
 impl Default for TextEditor {
@@ -31,6 +32,7 @@ impl TextEditor {
             last_analysis: None,
             programming_language: None,
             scroll_offset: 0.0,
+            font_loaded: false,
         }
     }
     
@@ -117,10 +119,13 @@ impl TextEditor {
         );
         
         ui.allocate_ui_at_rect(text_edit_rect, |ui| {
+            // Use monospace font for the text editor
+            let font_id = egui::FontId::monospace(self.font_size);
+            
             let mut text_edit = egui::TextEdit::multiline(content)
                 .desired_width(f32::INFINITY)
                 .desired_rows(10)
-                .font(egui::FontId::monospace(self.font_size))
+                .font(font_id)
                 .frame(false)
                 .text_color(ui.visuals().text_color());
             

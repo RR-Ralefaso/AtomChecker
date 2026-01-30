@@ -61,11 +61,15 @@ impl Dictionary {
         
         let language_manager = LanguageManager::new();
         
-        // Try to load main dictionary
-        if let Some(dict_path) = language_manager.get_dictionary_path(&self.language) {
-            println!("Loading dictionary for {} from: {:?}", self.language.name(), dict_path);
-            self.load_file(&dict_path)?;
-            self.file_path = Some(dict_path);
+        // Try to load main dictionary from CSV first, then fallback to TXT
+        if let Some(csv_path) = self.find_dictionary_file(&language_manager, "csv") {
+            println!("Loading CSV dictionary for {} from: {:?}", self.language.name(), csv_path);
+            self.load_csv_file(&csv_path)?;
+            self.file_path = Some(csv_path);
+        } else if let Some(txt_path) = self.find_dictionary_file(&language_manager, "txt") {
+            println!("Loading TXT dictionary for {} from: {:?}", self.language.name(), txt_path);
+            self.load_txt_file(&txt_path)?;
+            self.file_path = Some(txt_path);
         } else {
             println!("No dictionary file found for {}. Creating empty dictionary.", self.language.name());
         }
@@ -86,7 +90,67 @@ impl Dictionary {
         Ok(())
     }
     
-    pub fn load_file(&mut self, path: &Path) -> anyhow::Result<()> {
+    fn find_dictionary_file(&self, language_manager: &LanguageManager, extension: &str) -> Option<PathBuf> {
+        // First try the dictionary path from language manager
+        if let Some(path) = language_manager.get_dictionary_path(&self.language) {
+            let mut csv_path = path.clone();
+            csv_path.set_extension(extension);
+            if csv_path.exists() {
+                return Some(csv_path);
+            }
+        }
+        
+        // Try common patterns
+        let patterns = vec![
+            format!("dictionary_{}.{}", self.language.code(), extension),
+            format!("dictionary({}).{}", self.language.code(), extension),
+            format!("{}.{}", self.language.code(), extension),
+        ];
+        
+        let locations = vec![
+            PathBuf::from("src/dictionary"),
+            PathBuf::from("dictionary"),
+            LanguageManager::system_dict_dir(),
+            PathBuf::from("."),
+        ];
+        
+        for location in locations {
+            for pattern in &patterns {
+                let path = location.join(pattern);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+        
+        None
+    }
+    
+    fn load_csv_file(&mut self, path: &Path) -> anyhow::Result<()> {
+        let file = File::open(path)?;
+        let mut reader = csv::Reader::from_reader(file);
+        
+        let mut new_words = HashSet::new();
+        
+        for result in reader.records() {
+            let record = result?;
+            // CSV format: word,frequency,part_of_speech (optional)
+            if let Some(word) = record.get(0) {
+                let word = word.trim();
+                if !word.is_empty() && word.len() >= self.min_word_length {
+                    let normalized = self.normalize_word(word);
+                    new_words.insert(normalized);
+                }
+            }
+        }
+        
+        self.words.extend(new_words);
+        self.word_count_cache = self.words.len();
+        
+        Ok(())
+    }
+    
+    fn load_txt_file(&mut self, path: &Path) -> anyhow::Result<()> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         
@@ -121,15 +185,34 @@ impl Dictionary {
     
     fn load_user_words(&mut self) {
         let mut path = LanguageManager::user_dict_dir();
-        path.push(format!("user_{}.txt", self.language.code()));
+        path.push(format!("user_{}.csv", self.language.code()));
         
+        // First try CSV, then fallback to TXT
         if let Ok(file) = File::open(&path) {
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                if let Ok(word) = line {
-                    let word = word.trim().to_string();
-                    if !word.is_empty() {
-                        self.words.insert(self.normalize_word(&word));
+            if let Ok(mut reader) = csv::Reader::from_reader(file) {
+                for result in reader.records() {
+                    if let Ok(record) = result {
+                        if let Some(word) = record.get(0) {
+                            let word = word.trim().to_string();
+                            if !word.is_empty() {
+                                self.words.insert(self.normalize_word(&word));
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Fallback to TXT
+            let mut txt_path = path.clone();
+            txt_path.set_extension("txt");
+            if let Ok(file) = File::open(&txt_path) {
+                let reader = BufReader::new(file);
+                for line in reader.lines() {
+                    if let Ok(word) = line {
+                        let word = word.trim().to_string();
+                        if !word.is_empty() {
+                            self.words.insert(self.normalize_word(&word));
+                        }
                     }
                 }
             }
@@ -138,48 +221,76 @@ impl Dictionary {
     
     fn save_user_words(&self) -> anyhow::Result<()> {
         let mut path = LanguageManager::user_dict_dir();
-        path.push(format!("user_{}.txt", self.language.code()));
+        path.push(format!("user_{}.csv", self.language.code()));
         
-        let mut file = File::create(&path)?;
+        let file = File::create(&path)?;
+        let mut writer = csv::Writer::from_writer(file);
+        
         let mut sorted_words: Vec<&String> = self.words.iter().collect();
         sorted_words.sort();
         
         for word in sorted_words {
-            writeln!(file, "{}", word)?;
+            writer.write_record(&[word])?;
         }
+        
+        writer.flush()?;
         
         Ok(())
     }
     
     fn load_ignored_words(&mut self) {
         let mut path = LanguageManager::user_dict_dir();
-        path.push(format!("ignored_{}.txt", self.language.code()));
+        path.push(format!("ignored_{}.csv", self.language.code()));
         
+        // First try CSV, then fallback to TXT
         if let Ok(file) = File::open(&path) {
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                if let Ok(word) = line {
-                    let word = word.trim().to_string();
-                    if !word.is_empty() {
-                        self.ignored_words.insert(self.normalize_word(&word));
+            if let Ok(mut reader) = csv::Reader::from_reader(file) {
+                for result in reader.records() {
+                    if let Ok(record) = result {
+                        if let Some(word) = record.get(0) {
+                            let word = word.trim().to_string();
+                            if !word.is_empty() {
+                                self.ignored_words.insert(self.normalize_word(&word));
+                            }
+                        }
                     }
                 }
             }
-            self.ignored_count_cache = self.ignored_words.len();
+        } else {
+            // Fallback to TXT
+            let mut txt_path = path.clone();
+            txt_path.set_extension("txt");
+            if let Ok(file) = File::open(&txt_path) {
+                let reader = BufReader::new(file);
+                for line in reader.lines() {
+                    if let Ok(word) = line {
+                        let word = word.trim().to_string();
+                        if !word.is_empty() {
+                            self.ignored_words.insert(self.normalize_word(&word));
+                        }
+                    }
+                }
+            }
         }
+        
+        self.ignored_count_cache = self.ignored_words.len();
     }
     
     fn save_ignored_words(&self) -> anyhow::Result<()> {
         let mut path = LanguageManager::user_dict_dir();
-        path.push(format!("ignored_{}.txt", self.language.code()));
+        path.push(format!("ignored_{}.csv", self.language.code()));
         
-        let mut file = File::create(&path)?;
+        let file = File::create(&path)?;
+        let mut writer = csv::Writer::from_writer(file);
+        
         let mut sorted_words: Vec<&String> = self.ignored_words.iter().collect();
         sorted_words.sort();
         
         for word in sorted_words {
-            writeln!(file, "{}", word)?;
+            writer.write_record(&[word])?;
         }
+        
+        writer.flush()?;
         
         Ok(())
     }
@@ -316,19 +427,50 @@ impl Dictionary {
     }
     
     pub fn save_to_file(&self, path: &Path) -> anyhow::Result<()> {
-        let mut file = File::create(path)?;
-        let mut sorted_words: Vec<&String> = self.words.iter().collect();
-        sorted_words.sort();
+        let extension = path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("csv");
         
-        for word in sorted_words {
-            writeln!(file, "{}", word)?;
+        match extension {
+            "csv" => {
+                let file = File::create(path)?;
+                let mut writer = csv::Writer::from_writer(file);
+                let mut sorted_words: Vec<&String> = self.words.iter().collect();
+                sorted_words.sort();
+                
+                for word in sorted_words {
+                    writer.write_record(&[word])?;
+                }
+                
+                writer.flush()?;
+            }
+            "txt" => {
+                let mut file = File::create(path)?;
+                let mut sorted_words: Vec<&String> = self.words.iter().collect();
+                sorted_words.sort();
+                
+                for word in sorted_words {
+                    writeln!(file, "{}", word)?;
+                }
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported file extension: {}", extension));
+            }
         }
         
         Ok(())
     }
     
     pub fn import_from_file(&mut self, path: &Path) -> anyhow::Result<()> {
-        self.load_file(path)
+        let extension = path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("csv");
+        
+        match extension {
+            "csv" => self.load_csv_file(path),
+            "txt" => self.load_txt_file(path),
+            _ => Err(anyhow::anyhow!("Unsupported file extension: {}", extension)),
+        }
     }
     
     pub fn export_to_file(&self, path: &Path) -> anyhow::Result<()> {

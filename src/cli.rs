@@ -80,6 +80,10 @@ enum Commands {
         /// Minimum word length
         #[arg(short = 'm', long, default_value_t = 3)]
         min_length: usize,
+        
+        /// Output format (csv or txt)
+        #[arg(short = 'f', long, default_value = "csv")]
+        format: String,
     },
     
     /// Check spelling from stdin
@@ -206,7 +210,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         
-        Commands::CreateDict { input, output, lang, min_length } => {
+        Commands::CreateDict { input, output, lang, min_length, format } => {
             let content = std::fs::read_to_string(&input)?;
             let language = Language::from_code(&lang);
             let is_cjk = matches!(language, Language::Chinese | Language::Japanese | Language::Korean);
@@ -225,14 +229,29 @@ fn main() -> anyhow::Result<()> {
                     .progress_chars("#>-"),
             );
             
-            let mut dict_content = String::new();
-            for word in unique_words {
-                dict_content.push_str(&word);
-                dict_content.push('\n');
-                pb.inc(1);
+            match format.as_str() {
+                "csv" => {
+                    let mut writer = csv::Writer::from_path(&output)?;
+                    for word in unique_words {
+                        writer.write_record(&[&word])?;
+                        pb.inc(1);
+                    }
+                    writer.flush()?;
+                }
+                "txt" => {
+                    let mut content = String::new();
+                    for word in unique_words {
+                        content.push_str(&word);
+                        content.push('\n');
+                        pb.inc(1);
+                    }
+                    std::fs::write(&output, content)?;
+                }
+                _ => {
+                    return Err(anyhow::anyhow!("Unsupported format: {}", format));
+                }
             }
             
-            std::fs::write(&output, dict_content)?;
             pb.finish_with_message("Dictionary created!");
             
             println!("✅ Created dictionary '{}'", output.display());
@@ -240,6 +259,7 @@ fn main() -> anyhow::Result<()> {
             println!("   Words: {}", unique_words.len());
             println!("   Source: {}", input.display());
             println!("   Min word length: {}", min_length);
+            println!("   Format: {}", format);
         }
         
         Commands::Stdin { language, suggest, json } => {

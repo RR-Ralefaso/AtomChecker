@@ -91,7 +91,7 @@ impl Language {
     pub fn dictionary_filename(&self) -> Option<String> {
         match self {
             Language::AutoDetect => None,
-            _ => Some(format!("dictionary({}).txt", self.code())),
+            _ => Some(format!("dictionary_{}.csv", self.code())),
         }
     }
     
@@ -258,14 +258,27 @@ impl LanguageManager {
             if let Ok(entries) = std::fs::read_dir(&location) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("txt") {
-                        if let Some(filename) = path.file_stem().and_then(|n| n.to_str()) {
-                            if let Some(lang_code) = filename
-                                .strip_prefix("dictionary(")
-                                .and_then(|s| s.strip_suffix(")"))
-                            {
-                                let language = Language::from_code(lang_code);
-                                self.dictionary_paths.insert(language, path.clone());
+                    if path.is_file() {
+                        let extension = path.extension()
+                            .and_then(|ext| ext.to_str())
+                            .unwrap_or("");
+                        
+                        if extension == "csv" || extension == "txt" {
+                            if let Some(filename) = path.file_stem().and_then(|n| n.to_str()) {
+                                // Try to extract language code from filename
+                                let lang_code = if filename.starts_with("dictionary_") {
+                                    filename.strip_prefix("dictionary_")
+                                } else if filename.starts_with("dictionary(") {
+                                    filename.strip_prefix("dictionary(")
+                                        .and_then(|s| s.strip_suffix(")"))
+                                } else {
+                                    Some(filename)
+                                };
+                                
+                                if let Some(code) = lang_code {
+                                    let language = Language::from_code(code);
+                                    self.dictionary_paths.insert(language, path.clone());
+                                }
                             }
                         }
                     }
@@ -311,17 +324,24 @@ impl LanguageManager {
                     }
                 }
                 
-                if let Some(filename) = lang.dictionary_filename() {
-                    let locations = vec![
-                        Self::dictionary_dir().join(&filename),
-                        PathBuf::from("src/dictionary").join(&filename),
-                        PathBuf::from("dictionary").join(&filename),
-                        Self::user_dict_dir().join(&filename),
-                    ];
-                    
-                    for path in locations {
-                        if path.exists() {
-                            return Some(path);
+                // Try CSV first, then TXT
+                let extensions = ["csv", "txt"];
+                for ext in extensions {
+                    if let Some(filename) = lang.dictionary_filename() {
+                        let mut filename_with_ext = filename.clone();
+                        filename_with_ext = filename_with_ext.replace(".csv", &format!(".{}", ext));
+                        
+                        let locations = vec![
+                            Self::dictionary_dir().join(&filename_with_ext),
+                            PathBuf::from("src/dictionary").join(&filename_with_ext),
+                            PathBuf::from("dictionary").join(&filename_with_ext),
+                            Self::user_dict_dir().join(&filename_with_ext),
+                        ];
+                        
+                        for path in locations {
+                            if path.exists() {
+                                return Some(path);
+                            }
                         }
                     }
                 }
