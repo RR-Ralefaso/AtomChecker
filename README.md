@@ -4,6 +4,10 @@
 
 # AtomSpell - Atom IDE Inspired Spell Checker
 
+> **Project Status: Incomplete**
+> 
+> All core features have not been fully implemented and the project is unstable.
+
 A modern, multilingual spell checker with a beautiful Atom IDE-inspired interface.
 
 ## Features
